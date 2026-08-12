@@ -1,0 +1,14 @@
+model: yolov8n.yaml
+imgsz: 640
+epochs: 20
+batch_size: 8
+learning_rate: 0.01
+seed: 42
+device: auto
+workers: 2
+patience: 50
+confidence_threshold: 0.25
+save_period: 1
+project_dir: models/yolov8n
+results_dir: results/yolov8n
+prediction_samples: 3

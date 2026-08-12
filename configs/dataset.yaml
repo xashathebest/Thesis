@@ -1,0 +1,10 @@
+path: .
+train: dataset/train/images
+val: dataset/val/images
+test: dataset/test/images
+nc: 4
+names:
+  0: First Class
+  1: Second Class
+  2: Fatty/Oily
+  3: Rejected
