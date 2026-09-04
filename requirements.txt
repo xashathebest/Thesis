@@ -3,3 +3,5 @@ Pillow
 ultralytics
 torch
 torchvision
+scikit-learn
+joblib

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import math
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -26,6 +27,14 @@ MAX_ASPECT_RATIO = 3.00
 DARK_THRESHOLD = 45.0
 BRIGHT_THRESHOLD = 220.0
 BLUR_THRESHOLD = 100.0
+METADATA_ID_SEPARATOR = "|"
+REQUIRED_SPLIT_METADATA_COLUMNS = {
+    "image_id",
+    "capture_session",
+    "batch_id",
+    "scene_id",
+    "split_eligible",
+}
 
 
 @dataclass
@@ -58,7 +67,18 @@ class MetadataRecord:
     """A single image metadata entry from dataset/metadata.csv."""
 
     image_id: str
+    source_path: str | None = None
+    capture_date: str | None = None
+    capture_time: str | None = None
     capture_session: str | None = None
+    batch_id: str | None = None
+    scene_id: str | None = None
+    capture_sequence: str | None = None
+    specimen_ids: tuple[str, ...] = ()
+    split_group_id: str | None = None
+    duplicate_group_id: str | None = None
+    split_eligible: str | None = None
+    exclusion_reason: str | None = None
     image_class: str | None = None
     camera_resolution: str | None = None
     notes: str | None = None
@@ -67,18 +87,63 @@ class MetadataRecord:
 
 @dataclass
 class DatasetMetadata:
-    """Parsed metadata rows keyed by image ID and capture session."""
+    """Parsed image metadata and indexes used by leakage checks."""
 
     records_by_image_id: dict[str, MetadataRecord] = field(default_factory=dict)
     records_by_capture_session: dict[str, list[MetadataRecord]] = field(default_factory=lambda: defaultdict(list))
+    records_by_batch_id: dict[str, list[MetadataRecord]] = field(default_factory=lambda: defaultdict(list))
+    records_by_scene_id: dict[str, list[MetadataRecord]] = field(default_factory=lambda: defaultdict(list))
+    records_by_specimen_id: dict[str, list[MetadataRecord]] = field(default_factory=lambda: defaultdict(list))
+    fieldnames: tuple[str, ...] = ()
+    load_issues: list[ValidationIssue] = field(default_factory=list)
+
+    def record_for(self, image_id: str) -> MetadataRecord | None:
+        """Return the metadata record for a filename, path, or extensionless ID."""
+
+        return self.records_by_image_id.get(normalize_image_id(image_id))
 
     def session_for(self, image_id: str) -> str | None:
         """Return the capture session for an image if it exists."""
 
-        record = self.records_by_image_id.get(image_id)
+        record = self.record_for(image_id)
         if record is None:
             return None
         return record.capture_session
+
+
+@dataclass(frozen=True)
+class SpecimenAssociation:
+    """Connect one annotated instance in an image to a physical specimen."""
+
+    image_id: str
+    annotation_index: int
+    instance_id: str
+    specimen_id: str
+    scene_id: str | None = None
+    association_confidence: str | None = None
+    review_status: str | None = None
+    mask_review_status: str | None = None
+    notes: str | None = None
+
+
+@dataclass
+class SpecimenGroups:
+    """Normalized one-to-many image/specimen associations."""
+
+    associations_by_image_id: dict[str, list[SpecimenAssociation]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
+    associations_by_specimen_id: dict[str, list[SpecimenAssociation]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
+    fieldnames: tuple[str, ...] = ()
+    load_issues: list[ValidationIssue] = field(default_factory=list)
+
+    def specimen_ids_for(self, image_id: str) -> tuple[str, ...]:
+        """Return the unique physical specimen IDs associated with an image."""
+
+        associations = self.associations_by_image_id.get(normalize_image_id(image_id), [])
+        return tuple(sorted({association.specimen_id for association in associations}))
 
 
 @dataclass
@@ -120,6 +185,14 @@ class AnnotationRecord:
     y_center: float
     width: float
     height: float
+
+
+@dataclass
+class PolygonAnnotationRecord:
+    """A valid YOLO instance-segmentation polygon."""
+
+    class_id: int
+    points: tuple[tuple[float, float], ...]
 
 
 @dataclass
@@ -242,6 +315,33 @@ def load_class_mapping(classes_config_path: Path, dataset_config: dict[str, Any]
     return class_names
 
 
+def normalize_image_id(value: str) -> str:
+    """Normalize a path or filename to the extensionless ID used by manifests."""
+
+    normalized = value.strip().replace("\\", "/").rstrip("/")
+    filename = normalized.rsplit("/", 1)[-1]
+    suffix = Path(filename).suffix.lower()
+    if suffix in SUPPORTED_IMAGE_EXTENSIONS:
+        return filename[: -len(suffix)]
+    return filename
+
+
+def parse_pipe_separated_ids(value: str | None) -> tuple[str, ...]:
+    """Parse a pipe-separated ID field while preserving first-seen order."""
+
+    if value is None:
+        return ()
+
+    identifiers: list[str] = []
+    seen: set[str] = set()
+    for raw_identifier in value.split(METADATA_ID_SEPARATOR):
+        identifier = raw_identifier.strip()
+        if identifier and identifier not in seen:
+            identifiers.append(identifier)
+            seen.add(identifier)
+    return tuple(identifiers)
+
+
 def load_metadata_file(metadata_path: Path) -> DatasetMetadata:
     """Load dataset/metadata.csv into an in-memory lookup structure."""
 
@@ -249,42 +349,95 @@ def load_metadata_file(metadata_path: Path) -> DatasetMetadata:
     if not metadata_path.exists():
         return metadata
 
-    with metadata_path.open("r", encoding="utf-8", newline="") as file_handle:
+    with metadata_path.open("r", encoding="utf-8-sig", newline="") as file_handle:
         reader = csv.DictReader(file_handle)
         if reader.fieldnames is None:
             return metadata
 
-        for row in reader:
-            image_id = (row.get("image_id") or row.get("image") or row.get("filename") or "").strip()
+        metadata.fieldnames = tuple(field.strip() for field in reader.fieldnames if field)
+
+        for row_number, row in enumerate(reader, start=2):
+            if None in row:
+                metadata.load_issues.append(
+                    ValidationIssue(
+                        "ERROR",
+                        f"Metadata row {row_number} has more values than the CSV header.",
+                        str(metadata_path),
+                    )
+                )
+                continue
+            raw_image_id = (row.get("image_id") or row.get("image") or row.get("filename") or "").strip()
+            image_id = normalize_image_id(raw_image_id)
             if not image_id:
+                if any(str(value or "").strip() for value in row.values()):
+                    metadata.load_issues.append(
+                        ValidationIssue("ERROR", f"Metadata row {row_number} has no image_id.", str(metadata_path))
+                    )
+                continue
+
+            if image_id in metadata.records_by_image_id:
+                metadata.load_issues.append(
+                    ValidationIssue(
+                        "ERROR",
+                        f"Duplicate metadata image_id after normalization: {image_id}",
+                        str(metadata_path),
+                    )
+                )
                 continue
 
             capture_session = (row.get("capture_session") or "").strip() or None
+            batch_id = (row.get("batch_id") or "").strip() or None
+            scene_id = (row.get("scene_id") or "").strip() or None
+            specimen_ids = parse_pipe_separated_ids(row.get("specimen_ids") or row.get("specimen_id"))
             image_class = (row.get("class") or row.get("fish_class") or "").strip() or None
             camera_resolution = (row.get("camera_resolution") or "").strip() or None
             notes = (row.get("notes") or "").strip() or None
 
+            known_fields = {
+                "image_id",
+                "image",
+                "filename",
+                "source_path",
+                "capture_date",
+                "capture_time",
+                "capture_session",
+                "batch_id",
+                "scene_id",
+                "capture_sequence",
+                "specimen_id",
+                "specimen_ids",
+                "split_group_id",
+                "duplicate_group_id",
+                "split_eligible",
+                "exclusion_reason",
+                "class",
+                "fish_class",
+                "camera_resolution",
+                "notes",
+            }
+
             extra_fields = {
                 key: value.strip()
                 for key, value in row.items()
-                if key
-                not in {
-                    "image_id",
-                    "image",
-                    "filename",
-                    "capture_session",
-                    "class",
-                    "fish_class",
-                    "camera_resolution",
-                    "notes",
-                }
+                if key not in known_fields
                 and value is not None
                 and value.strip()
             }
 
             record = MetadataRecord(
                 image_id=image_id,
+                source_path=(row.get("source_path") or "").strip() or None,
+                capture_date=(row.get("capture_date") or "").strip() or None,
+                capture_time=(row.get("capture_time") or "").strip() or None,
                 capture_session=capture_session,
+                batch_id=batch_id,
+                scene_id=scene_id,
+                capture_sequence=(row.get("capture_sequence") or "").strip() or None,
+                specimen_ids=specimen_ids,
+                split_group_id=(row.get("split_group_id") or "").strip() or None,
+                duplicate_group_id=(row.get("duplicate_group_id") or "").strip() or None,
+                split_eligible=(row.get("split_eligible") or "").strip().lower() or None,
+                exclusion_reason=(row.get("exclusion_reason") or "").strip() or None,
                 image_class=image_class,
                 camera_resolution=camera_resolution,
                 notes=notes,
@@ -293,8 +446,91 @@ def load_metadata_file(metadata_path: Path) -> DatasetMetadata:
             metadata.records_by_image_id[image_id] = record
             if capture_session:
                 metadata.records_by_capture_session[capture_session].append(record)
+            if batch_id:
+                metadata.records_by_batch_id[batch_id].append(record)
+            if scene_id:
+                metadata.records_by_scene_id[scene_id].append(record)
+            for specimen_id in specimen_ids:
+                metadata.records_by_specimen_id[specimen_id].append(record)
 
     return metadata
+
+
+def load_specimen_groups_file(groups_path: Path) -> SpecimenGroups:
+    """Load normalized image-instance-specimen links from a CSV manifest."""
+
+    groups = SpecimenGroups()
+    if not groups_path.exists():
+        return groups
+
+    with groups_path.open("r", encoding="utf-8-sig", newline="") as file_handle:
+        reader = csv.DictReader(file_handle)
+        if reader.fieldnames is None:
+            return groups
+
+        groups.fieldnames = tuple(field.strip() for field in reader.fieldnames if field)
+        required_fields = {"image_id", "instance_id", "specimen_id"}
+        missing_fields = sorted(required_fields - set(groups.fieldnames))
+        if missing_fields:
+            groups.load_issues.append(
+                ValidationIssue(
+                    "ERROR",
+                    "Specimen-group manifest is missing columns: " + ", ".join(missing_fields),
+                    str(groups_path),
+                )
+            )
+            return groups
+
+        seen_instances: set[tuple[str, str]] = set()
+        for row_number, row in enumerate(reader, start=2):
+            if None in row:
+                groups.load_issues.append(
+                    ValidationIssue(
+                        "ERROR",
+                        f"Specimen-group row {row_number} has more values than the CSV header.",
+                        str(groups_path),
+                    )
+                )
+                continue
+            image_id = normalize_image_id(row.get("image_id") or "")
+            instance_id = (row.get("instance_id") or "").strip()
+            specimen_id = (row.get("specimen_id") or "").strip()
+
+            if not image_id or not instance_id or not specimen_id:
+                groups.load_issues.append(
+                    ValidationIssue(
+                        "ERROR",
+                        f"Specimen-group row {row_number} requires image_id, instance_id, and specimen_id.",
+                        str(groups_path),
+                    )
+                )
+                continue
+
+            instance_key = (image_id, instance_id)
+            if instance_key in seen_instances:
+                groups.load_issues.append(
+                    ValidationIssue(
+                        "ERROR",
+                        f"Duplicate specimen association for image/instance: {image_id}/{instance_id}",
+                        str(groups_path),
+                    )
+                )
+                continue
+            seen_instances.add(instance_key)
+
+            association = SpecimenAssociation(
+                image_id=image_id,
+                instance_id=instance_id,
+                specimen_id=specimen_id,
+                scene_id=(row.get("scene_id") or "").strip() or None,
+                association_confidence=(row.get("association_confidence") or "").strip() or None,
+                review_status=(row.get("review_status") or "").strip() or None,
+                notes=(row.get("notes") or "").strip() or None,
+            )
+            groups.associations_by_image_id[image_id].append(association)
+            groups.associations_by_specimen_id[specimen_id].append(association)
+
+    return groups
 
 
 def resolve_dataset_root(dataset_config: dict[str, Any], repo_root: Path) -> Path:
@@ -523,7 +759,7 @@ def validate_label_file(
             continue
 
         coordinates = (x_center, y_center, width, height)
-        if any(value < 0.0 or value > 1.0 for value in coordinates):
+        if any(not math.isfinite(value) or value < 0.0 or value > 1.0 for value in coordinates):
             issues.append(
                 ValidationIssue(
                     "ERROR",
@@ -572,11 +808,78 @@ def validate_label_file(
     return annotations, issues
 
 
+def validate_polygon_label_file(
+    label_path: Path,
+    class_count: int,
+) -> tuple[list[PolygonAnnotationRecord], list[ValidationIssue]]:
+    """Validate a YOLO polygon file without changing legacy box validation."""
+
+    issues: list[ValidationIssue] = []
+    annotations: list[PolygonAnnotationRecord] = []
+    raw_lines = label_path.read_text(encoding="utf-8").splitlines()
+    if not any(line.strip() for line in raw_lines):
+        return annotations, [ValidationIssue("ERROR", "Empty annotation file.", str(label_path))]
+
+    for line_number, raw_line in enumerate(raw_lines, start=1):
+        parts = raw_line.strip().split()
+        if not parts:
+            continue
+        if len(parts) < 7 or (len(parts) - 1) % 2:
+            issues.append(
+                ValidationIssue(
+                    "ERROR",
+                    f"Invalid polygon on line {line_number}; expected a class and at least three x/y points.",
+                    str(label_path),
+                )
+            )
+            continue
+        try:
+            class_id = int(parts[0])
+            coordinates = [float(value) for value in parts[1:]]
+        except ValueError:
+            issues.append(
+                ValidationIssue("ERROR", f"Invalid polygon value on line {line_number}.", str(label_path))
+            )
+            continue
+        if class_id < 0 or class_id >= class_count:
+            issues.append(
+                ValidationIssue("ERROR", f"Invalid class ID {class_id} on line {line_number}.", str(label_path))
+            )
+            continue
+        if any(not math.isfinite(value) or value < 0.0 or value > 1.0 for value in coordinates):
+            issues.append(
+                ValidationIssue(
+                    "ERROR",
+                    f"Polygon coordinates must be normalized to the 0-1 range on line {line_number}.",
+                    str(label_path),
+                )
+            )
+            continue
+
+        points = tuple(zip(coordinates[0::2], coordinates[1::2]))
+        doubled_area = abs(
+            sum(
+                x_value * points[(index + 1) % len(points)][1]
+                - points[(index + 1) % len(points)][0] * y_value
+                for index, (x_value, y_value) in enumerate(points)
+            )
+        )
+        if len(set(points)) < 3 or doubled_area <= 1e-12:
+            issues.append(
+                ValidationIssue("ERROR", f"Degenerate polygon on line {line_number}.", str(label_path))
+            )
+            continue
+        annotations.append(PolygonAnnotationRecord(class_id=class_id, points=points))
+
+    return annotations, issues
+
+
 def inspect_split(
     split_name: str,
     image_dir: Path,
     label_dir: Path,
     class_count: int,
+    annotation_format: str = "box",
 ) -> tuple[SplitSummary, list[ValidationIssue]]:
     """Inspect one dataset pool or split and gather validation issues."""
 
@@ -653,7 +956,17 @@ def inspect_split(
             continue
 
         summary.label_count += 1
-        annotations, label_issues = validate_label_file(label_file, inspection.width, inspection.height, class_count)
+        if annotation_format == "polygon":
+            annotations, label_issues = validate_polygon_label_file(label_file, class_count)
+        elif annotation_format == "box":
+            annotations, label_issues = validate_label_file(
+                label_file,
+                inspection.width,
+                inspection.height,
+                class_count,
+            )
+        else:
+            raise ValueError("annotation_format must be 'box' or 'polygon'.")
         issues.extend(label_issues)
 
         classes_in_image: set[int] = set()

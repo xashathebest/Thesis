@@ -15,7 +15,7 @@ from typing import Any
 from src.preprocessing.dataset_utils import load_class_mapping, load_yaml_file, project_root
 from src.preprocessing.validate_dataset import run_validation
 
-EXPECTED_CLASS_MAP = {0: "First Class", 1: "Second Class", 2: "Fatty/Oily", 3: "Rejected"}
+EXPECTED_CLASS_MAP = {0: "Class A", 1: "Class B", 2: "Class C", 3: "Rejected"}
 
 
 def _get_package_version(package_name: str) -> str:
@@ -79,7 +79,8 @@ def _resolve_device(requested_device: str | int | None, cuda_available: bool) ->
 def _dataset_split_image_count(split_name: str, repo_root: Path) -> int:
     """Count images in a dataset split."""
 
-    split_dir = repo_root / "dataset" / split_name / "images"
+    directory_name = "validation" if split_name == "val" else split_name
+    split_dir = repo_root / "dataset" / "splits" / directory_name / "images"
     if not split_dir.exists():
         return 0
     return sum(1 for path in split_dir.iterdir() if path.is_file())
@@ -122,9 +123,9 @@ def _ensure_pilot_dataset_ready(repo_root: Path) -> tuple[dict[str, Any], list[s
     train_count = _dataset_split_image_count("train", repo_root)
     val_count = _dataset_split_image_count("val", repo_root)
     if train_count == 0:
-        errors.append("No training images were found in dataset/train/images.")
+        errors.append("No training images were found in dataset/splits/train/images.")
     if val_count == 0:
-        errors.append("No validation images were found in dataset/val/images.")
+        errors.append("No validation images were found in dataset/splits/validation/images.")
 
     return {
         "dataset_config": dataset_config,
@@ -159,7 +160,7 @@ def _import_yolo():
 def _collect_validation_image_paths(repo_root: Path, sample_size: int) -> list[Path]:
     """Return a small deterministic sample of validation images for post-training previews."""
 
-    val_dir = repo_root / "dataset" / "val" / "images"
+    val_dir = repo_root / "dataset" / "splits" / "validation" / "images"
     if not val_dir.exists():
         return []
 

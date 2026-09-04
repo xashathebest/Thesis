@@ -1,0 +1,37 @@
+# Conservative defaults for derived copies and mask-based measurements.
+# These are measurement parameters, never A/B/C/Rejected decision thresholds.
+seed: 42
+
+standardization:
+  max_long_edge: 1280
+  output_format: png
+  allow_upscale: false
+  jpeg_quality: 95
+  png_compress_level: 3
+
+instance_processing:
+  crop_margin_fraction: 0.08
+  mask_threshold: 127
+  minimum_mask_pixels: 500
+  approved_mask_statuses: "APPROVED,ADJUDICATED"
+
+feature_extraction:
+  mask_threshold: 127
+  minimum_mask_pixels: 500
+  width_window_fraction: 0.04
+  skeleton_max_dimension: 1024
+  skeleton_max_iterations: 256
+  glcm_levels: 16
+  glcm_distance: 1
+  yellow_hue_min_deg: 35.0
+  yellow_hue_max_deg: 75.0
+  yellow_saturation_min: 0.15
+  yellow_value_min: 0.25
+  brown_hue_min_deg: 5.0
+  brown_hue_max_deg: 40.0
+  brown_saturation_min: 0.20
+  brown_value_max: 0.65
+  dark_lab_l_max: 25.0
+  specular_value_min: 0.90
+  specular_saturation_max: 0.20
+  edge_gradient_min: 0.12

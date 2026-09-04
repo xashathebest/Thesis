@@ -30,3 +30,22 @@ Thumbs.db
 *.tflite
 *.engine
 *.mlmodel
+
+# Immutable source data and generated image derivatives
+dataset/raw/**/*
+!dataset/raw/README.md
+!dataset/raw/**/.gitkeep
+dataset/cleaned/**/*
+dataset/standardized/**/*
+dataset/masks/**/*
+dataset/crops/**/*
+dataset/splits/**/*
+# Git cannot re-include a file while one of its parent directories remains
+# ignored, so retain the documented directory skeleton explicitly.
+!dataset/**/
+!dataset/**/README.md
+!dataset/**/.gitkeep
+
+# Local audit/runtime scratch data
+tmp/
+.audit_tmp/

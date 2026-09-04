@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 from pathlib import Path
 
 from .dataset_utils import (
@@ -13,7 +14,9 @@ from .dataset_utils import (
     is_heavily_imbalanced,
     load_class_mapping,
     load_metadata_file,
+    load_specimen_groups_file,
     load_yaml_file,
+    normalize_image_id,
     project_root,
     resolve_config_path,
     resolve_dataset_root,
@@ -24,6 +27,7 @@ from .dataset_utils import (
 def run_validation(
     dataset_config_path: Path | None = None,
     classes_config_path: Path | None = None,
+    annotation_format: str = "box",
 ) -> ValidationResult:
     """Run the dataset validation checks and return a structured result."""
 
@@ -31,11 +35,15 @@ def run_validation(
     dataset_config_path = dataset_config_path or (repo_root / "configs" / "dataset.yaml")
     classes_config_path = classes_config_path or (repo_root / "configs" / "classes.yaml")
     metadata_path = repo_root / "dataset" / "metadata.csv"
+    specimen_groups_path = repo_root / "dataset" / "manifests" / "specimen_groups.csv"
 
     dataset_config = load_yaml_file(dataset_config_path)
     class_names = load_class_mapping(classes_config_path, dataset_config)
     metadata = load_metadata_file(metadata_path)
+    specimen_groups = load_specimen_groups_file(specimen_groups_path)
     issues: list[ValidationIssue] = []
+    issues.extend(metadata.load_issues)
+    issues.extend(specimen_groups.load_issues)
 
     if not class_names:
         issues.append(
@@ -46,7 +54,7 @@ def run_validation(
             )
         )
 
-    expected_class_map = {0: "First Class", 1: "Second Class", 2: "Fatty/Oily", 3: "Rejected"}
+    expected_class_map = {0: "Class A", 1: "Class B", 2: "Class C", 3: "Rejected"}
     if class_names and class_names != expected_class_map:
         issues.append(
             ValidationIssue(
@@ -58,9 +66,9 @@ def run_validation(
 
     dataset_root = resolve_dataset_root(dataset_config, repo_root)
     configured_paths = {
-        "train": dataset_config.get("train", "dataset/train/images"),
-        "val": dataset_config.get("val", "dataset/val/images"),
-        "test": dataset_config.get("test", "dataset/test/images"),
+        "train": dataset_config.get("train", "dataset/splits/train/images"),
+        "validation": dataset_config.get("val", "dataset/splits/validation/images"),
+        "test": dataset_config.get("test", "dataset/splits/test/images"),
     }
 
     for split_name, configured_path in configured_paths.items():
@@ -81,18 +89,37 @@ def run_validation(
         annotated_images_dir,
         annotated_labels_dir,
         len(class_names) or 4,
+        annotation_format=annotation_format,
     )
     issues.extend(annotated_issues)
 
     split_summaries = {}
     split_hash_map: dict[str, set[str]] = {}
     split_name_map: dict[str, set[str]] = {}
-    split_session_map: dict[str, set[str]] = {}
+    split_relation_maps: dict[str, dict[str, set[str]]] = {
+        relation: {}
+        for relation in (
+            "capture session",
+            "batch",
+            "scene",
+            "capture sequence",
+            "explicit split group",
+            "duplicate group",
+            "specimen",
+        )
+    }
+    materialized_splits_by_image: dict[str, set[str]] = {}
 
     for split_name, configured_path in configured_paths.items():
         image_dir = resolve_config_path(dataset_root, str(configured_path))
         label_dir = image_dir.parent / "labels"
-        summary, split_issues = inspect_split(split_name, image_dir, label_dir, len(class_names) or 4)
+        summary, split_issues = inspect_split(
+            split_name,
+            image_dir,
+            label_dir,
+            len(class_names) or 4,
+            annotation_format=annotation_format,
+        )
         split_summaries[split_name] = summary
         issues.extend(split_issues)
 
@@ -105,9 +132,73 @@ def run_validation(
         for image_path in image_dir.rglob("*"):
             if not image_path.is_file() or image_path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}:
                 continue
-            capture_session = metadata.session_for(image_path.stem)
-            if capture_session:
-                split_session_map.setdefault(capture_session, set()).add(split_name)
+            image_id = normalize_image_id(image_path.name)
+            materialized_splits_by_image.setdefault(image_id, set()).add(split_name)
+            record = metadata.record_for(image_id)
+            if record is None:
+                issues.append(
+                    ValidationIssue(
+                        "ERROR",
+                        f"Split image has no metadata row: {image_path.name}",
+                        str(metadata_path),
+                    )
+                )
+                continue
+
+            if (record.split_eligible or "").strip().lower() not in {"1", "true", "yes", "y"}:
+                issues.append(
+                    ValidationIssue(
+                        "ERROR",
+                        f"Split image {image_path.name} is not explicitly marked split_eligible=yes.",
+                        str(metadata_path),
+                    )
+                )
+
+            scalar_relations = {
+                "capture session": record.capture_session,
+                "batch": record.batch_id,
+                "scene": record.scene_id,
+                "capture sequence": record.capture_sequence,
+                "explicit split group": record.split_group_id,
+            }
+            for relation_name, relation_id in scalar_relations.items():
+                if relation_id:
+                    split_relation_maps[relation_name].setdefault(relation_id, set()).add(split_name)
+
+            duplicate_ids = [
+                value.strip()
+                for value in (record.duplicate_group_id or "").split("|")
+                if value.strip()
+            ]
+            for duplicate_id in duplicate_ids:
+                split_relation_maps["duplicate group"].setdefault(duplicate_id, set()).add(split_name)
+
+            specimen_ids = set(record.specimen_ids)
+            specimen_ids.update(specimen_groups.specimen_ids_for(image_id))
+            if not specimen_ids:
+                issues.append(
+                    ValidationIssue(
+                        "ERROR",
+                        f"Split image has no physical specimen association: {image_path.name}",
+                        str(specimen_groups_path),
+                    )
+                )
+            for specimen_id in specimen_ids:
+                split_relation_maps["specimen"].setdefault(specimen_id, set()).add(split_name)
+
+            for required_name, required_value in {
+                "capture_session": record.capture_session,
+                "batch_id": record.batch_id,
+                "scene_id": record.scene_id,
+            }.items():
+                if not required_value:
+                    issues.append(
+                        ValidationIssue(
+                            "ERROR",
+                            f"Split image {image_path.name} is missing {required_name} metadata.",
+                            str(metadata_path),
+                        )
+                    )
 
     for image_id, record in metadata.records_by_image_id.items():
         if not record.capture_session:
@@ -115,6 +206,22 @@ def run_validation(
                 ValidationIssue(
                     "WARNING",
                     f"Capture session is missing for metadata entry: {image_id}",
+                    str(metadata_path),
+                )
+            )
+        if not record.batch_id:
+            issues.append(
+                ValidationIssue(
+                    "WARNING",
+                    f"Batch ID is missing for metadata entry: {image_id}",
+                    str(metadata_path),
+                )
+            )
+        if not record.scene_id:
+            issues.append(
+                ValidationIssue(
+                    "WARNING",
+                    f"Scene ID is missing for metadata entry: {image_id}",
                     str(metadata_path),
                 )
             )
@@ -139,15 +246,69 @@ def run_validation(
                 )
             )
 
-    for capture_session, split_names in split_session_map.items():
-        if len(split_names) > 1:
-            issues.append(
-                ValidationIssue(
-                    "WARNING",
-                    f"Images from {capture_session} appear in multiple splits: {', '.join(sorted(split_names))}",
-                    str(metadata_path),
+    for relation_name, relation_map in split_relation_maps.items():
+        for relation_id, split_names in relation_map.items():
+            if len(split_names) > 1:
+                issues.append(
+                    ValidationIssue(
+                        "ERROR",
+                        f"The same {relation_name} ({relation_id}) appears in multiple splits: "
+                        f"{', '.join(sorted(split_names))}",
+                        str(metadata_path),
+                    )
                 )
+
+    split_manifest_path = repo_root / "dataset" / "manifests" / "split_manifest.csv"
+    if split_manifest_path.exists():
+        # Local import avoids a module cycle: split_dataset imports shared validators.
+        from .split_dataset import validate_manifest_file
+
+        issues.extend(validate_manifest_file(split_manifest_path))
+        if materialized_splits_by_image:
+            with split_manifest_path.open("r", encoding="utf-8-sig", newline="") as file_handle:
+                expected_splits = {
+                    normalize_image_id(row.get("image_id") or ""): (
+                        "validation" if (row.get("split") or "").strip() == "val" else (row.get("split") or "").strip()
+                    )
+                    for row in csv.DictReader(file_handle)
+                    if normalize_image_id(row.get("image_id") or "")
+                }
+            actual_image_ids = set(materialized_splits_by_image)
+            expected_image_ids = set(expected_splits)
+            for image_id in sorted(expected_image_ids - actual_image_ids):
+                issues.append(
+                    ValidationIssue(
+                        "ERROR",
+                        f"Manifest image is missing from materialized splits: {image_id}",
+                        str(split_manifest_path),
+                    )
+                )
+            for image_id in sorted(actual_image_ids - expected_image_ids):
+                issues.append(
+                    ValidationIssue(
+                        "ERROR",
+                        f"Materialized split image is absent from the manifest: {image_id}",
+                        str(split_manifest_path),
+                    )
+                )
+            for image_id in sorted(actual_image_ids & expected_image_ids):
+                actual_splits = materialized_splits_by_image[image_id]
+                if actual_splits != {expected_splits[image_id]}:
+                    issues.append(
+                        ValidationIssue(
+                            "ERROR",
+                            f"Materialized assignment disagrees with the manifest for {image_id}.",
+                            str(split_manifest_path),
+                        )
+                    )
+    elif materialized_splits_by_image:
+        issues.append(
+            ValidationIssue(
+                "ERROR",
+                "Materialized split files exist without dataset/manifests/split_manifest.csv.",
+                str(dataset_root / "dataset" / "splits"),
             )
+        )
 
     return ValidationResult(
         root=dataset_root,
@@ -252,9 +413,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Validate the Sardinella Lemuru dataset.")
     parser.add_argument("--dataset-config", type=Path, default=None, help="Path to configs/dataset.yaml")
     parser.add_argument("--classes-config", type=Path, default=None, help="Path to configs/classes.yaml")
+    parser.add_argument(
+        "--annotation-format",
+        choices=("polygon", "box"),
+        default="polygon",
+        help="Validate instance polygons by default; select box only for legacy detector labels.",
+    )
     args = parser.parse_args()
 
-    result = run_validation(args.dataset_config, args.classes_config)
+    result = run_validation(args.dataset_config, args.classes_config, args.annotation_format)
     print(format_validation_output(result))
     return 0 if result.passed else 1
 

@@ -1,60 +1,87 @@
-# Annotation Guidelines
+# Instance Annotation and Grading Guidelines
 
-These guidelines describe how the research team should annotate Sardinella lemuru images for the thesis dataset.
+These rules apply to dried *Sardinella lemuru* images used by the thesis. The
+annotation unit is one physical fish or, after the research team defines the
+sorting policy, one independently sortable rejected fragment. Raw folder names
+are provenance hints and must not be copied blindly to every visible object.
 
-## Basic Rules
+## Final classes
 
-- Draw one bounding box around each visible fish.
-- Keep the bounding box as tight as reasonably possible.
-- Assign exactly one quality class per fish.
-- Do not include large amounts of conveyor belt or background inside the box.
-- Keep annotation style consistent across all annotators.
-- Do not change labels intentionally just to balance the dataset.
+- `0 = Class A`: substantially complete, normal/slender morphology, relatively
+  clean silver/gray surface, and low defect burden. Small localized yellow or
+  brown regions around the head, gills, belly edge, or tail are permitted.
+- `1 = Class B`: substantially complete, with moderate discoloration, damaged or
+  missing scales, scraping, rough texture, small holes/tears, or moderate local
+  deformation. Yellow pixels alone are insufficient.
+- `2 = Class C`: substantially complete with clearly broader/full middle-body
+  morphology relative to length. Gloss is supporting evidence only.
+- `3 = Rejected`: severe anatomical loss, major fragmentation, missing major
+  body portions, exposed skeleton/spine, or major structural discontinuity.
 
-## Class Labels
+The tentative `Rejected -> C -> B -> A` conflict priority must not be applied
+until domain experts approve it. Record independent attributes first so policy
+changes do not require re-annotating the visible evidence.
 
-- `0 = First Class`
-- `1 = Second Class`
-- `2 = Fatty/Oily`
-- `3 = Rejected`
+## Required instance geometry
 
-## Special Cases
+- Draw one tight polygon mask around each separable fish. A bounding box may be
+  exported as an additional annotation, but it does not replace the mask.
+- Exclude neighboring fish and as much background as possible.
+- Use a persistent `instance_id` and `specimen_id` across repeated frames.
+- Do not merge touching fish into one instance.
+- When boundaries cannot be resolved, set `occluded=true` and normally
+  `gradable=false`; do not invent a contour.
+- Mark fish clipped by the image boundary as `truncated=true`. Image truncation
+  is not anatomical damage and must not independently cause a Rejected label.
+- Do not infer that a hidden head or tail is physically missing.
 
-### Partially Visible Fish
+## Required attributes
 
-Annotate a partially visible fish only if the fish can still be identified with reasonable confidence.
+Record the fields in
+`dataset/annotations/attributes/instance_attributes_template.csv`, including:
 
-RESEARCH TEAM DECISION REQUIRED: whether a specific partial view is acceptable for annotation in borderline cases.
+- provenance: specimen, batch, capture session, and scene;
+- structural attributes: head/tail presence, body completeness/continuity, and
+  severe structural damage;
+- morphology: full-body indicator and fullness score;
+- surface/color: defect and discoloration presence/severity;
+- quality controls: occlusion, truncation, gradability, and confidence;
+- independent expert labels and the adjudicated label.
 
-### Overlapping Fish
+Use an explicit unknown value when anatomy is not visible. Do not encode unknown
+as `false`.
 
-If two fish can still be separated visually, draw separate boxes for each fish.
+## Agreement and adjudication
 
-RESEARCH TEAM DECISION REQUIRED: how to label cases where overlap is so strong that the fish boundaries cannot be separated reliably.
+1. Two qualified annotators independently label the gold-standard subset.
+2. Calculate raw agreement and Cohen's kappa for final class. Use a suitable
+   weighted agreement statistic for ordinal severity scores.
+3. Send disagreements, low-confidence examples, B/C conflicts, and possible
+   B/Rejected boundary cases to an expert adjudicator.
+4. Preserve both original opinions and the adjudicated outcome.
+5. Revise the rubric if qualified humans cannot distinguish a class pair
+   consistently.
 
-### Blurry or Unusable Images
+## YOLO segmentation label format
 
-Do not guess labels for fish that cannot be identified with confidence.
+Each image in a materialized split has a same-stem `.txt` file. Each line is:
 
-RESEARCH TEAM DECISION REQUIRED: whether a blurry or unusable image should be excluded entirely or kept for review.
+`class_id x1 y1 x2 y2 x3 y3 ...`
 
-### Uncertain Quality Class
+Coordinates are normalized to `[0, 1]` and contain at least three polygon
+points. Run the segmentation preflight before training; five-value YOLO boxes
+are deliberately rejected by that preflight.
 
-If the quality class cannot be determined confidently, do not invent a label.
+## Manual-review conditions
 
-RESEARCH TEAM DECISION REQUIRED: the final policy for uncertain class assignment.
+Use `MANUAL_REVIEW` rather than guessing when:
 
-## YOLO Label Format
+- B and C characteristics coexist;
+- moderate damage approaches severe anatomical loss;
+- glare hides morphology or surface condition;
+- overlap prevents a trustworthy individual mask;
+- head or tail status is unknown because of framing;
+- a detached fragment cannot be associated with its source fish.
 
-Each image must have a matching label file with the same base name.
-
-Example:
-
-- `dataset/annotated/images/fish_0001.jpg`
-- `dataset/annotated/labels/fish_0001.txt`
-
-Each YOLO line must follow:
-
-`class_id x_center y_center width height`
-
-All bounding box coordinates must be normalized between `0` and `1`.
+The research team must document whether detached pieces are individual sortable
+objects before annotation begins.
