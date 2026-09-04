@@ -422,6 +422,7 @@ dataset/reports/                 dataset and annotation audit reports
 src/data_pipeline/audit/         integrity and duplicate audit commands
 src/preprocessing/               standardization, grouping, splitting, and crop preparation
 src/features/                    mask-based morphology, color, and texture extraction
+src/inference/                   local inference entry points and Roboflow workflow client
 src/training/                    segmentation and feature-model baselines
 src/evaluation/                  agreement and locked-test evaluation
 models/                          versioned training-run artifacts
@@ -445,3 +446,60 @@ does not include an ESP32-CAM, cloud service, database, servo, motor controller,
 automatic sorting hardware. A real production decision should add calibrated
 confidence/rejection behavior, distribution-shift monitoring, and human review for
 uncertain or out-of-scope instances.
+
+## Roboflow workflow integration
+
+The repository also includes a thin Roboflow workflow client at
+[src/inference/roboflow_workflow.py](src/inference/roboflow_workflow.py). It is
+intended for image inputs only and reads the API key from `ROBOFLOW_API_KEY`.
+
+Example usage:
+
+```powershell
+$env:ROBOFLOW_API_KEY = "your-roboflow-api-key"
+python -m src.inference.roboflow_workflow dataset/annotated/images/example.jpg
+```
+
+The client prints the raw workflow response as JSON and writes decoded image
+outputs to temporary files when the workflow returns base64 image blobs.
+
+To score the workflow against the labeled split and report mAP, accuracy, F1,
+and related metrics, run:
+
+```bash
+python -m src.evaluation.evaluate_roboflow_workflow --split test
+```
+
+If you have labeled images outside the split tree, point the evaluator at them
+directly:
+
+```bash
+python -m src.evaluation.evaluate_roboflow_workflow --images-dir dataset/annotated/images --labels-dir dataset/annotated/labels
+```
+
+To save one CSV row per image alongside the JSON summary, add `--per-image-csv`:
+
+```bash
+python -m src.evaluation.evaluate_roboflow_workflow --images-dir dataset/annotated/images --labels-dir dataset/annotated/labels --per-image-csv results/roboflow/per_image.csv
+```
+
+## Importing a Roboflow dataset
+
+If you are downloading labeled data from Roboflow for local training or testing,
+export it as a segmentation dataset with polygon labels. The repo expects YOLO-style
+polygon masks, not box-only annotations.
+
+After download, map the Roboflow split folders into this repo like this:
+
+```text
+Roboflow export/train/images      -> dataset/splits/train/images
+Roboflow export/train/labels      -> dataset/splits/train/labels
+Roboflow export/valid/images      -> dataset/splits/validation/images
+Roboflow export/valid/labels      -> dataset/splits/validation/labels
+Roboflow export/test/images       -> dataset/splits/test/images
+Roboflow export/test/labels       -> dataset/splits/test/labels
+```
+
+If you want to inspect or re-label the data before splitting, place the export in
+`dataset/annotated/images/` and `dataset/annotated/labels/` first, then materialize
+`dataset/splits/` from the reviewed annotations.
