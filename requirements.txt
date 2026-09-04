@@ -5,3 +5,7 @@ torch
 torchvision
 scikit-learn
 joblib
+fastapi
+uvicorn[standard]
+opencv-python
+PyYAML

@@ -107,6 +107,118 @@ python -m pip install -r requirements.txt
 
 Run commands from this directory so configuration-relative paths resolve correctly.
 
+## Version 1 operator dashboard
+
+The local dashboard adds an operator-facing path alongside the existing research
+and training commands. It does not replace the training or command-line inference
+pipeline.
+
+```text
+OpenCV webcam -> one Python worker -> loaded YOLOv8 model
+              -> annotated JPEG frames -> FastAPI MJPEG stream -> browser dashboard
+              -> detection metadata   -> polled JSON status  -> counters/results
+```
+
+The backend is deliberately the sole camera owner. It loads one model at startup,
+runs inference once per captured frame, and shares the resulting annotated frame
+and metadata with every API consumer. FastAPI also serves the dependency-free
+responsive frontend, so no Node.js installation or separate frontend build is
+needed for Version 1.
+
+### New dashboard structure
+
+```text
+src/api/app.py       FastAPI routes, startup/shutdown, and MJPEG response
+src/api/camera.py    single camera/inference worker and lifecycle
+src/api/model.py     newest-weight discovery and YOLO result adapter
+src/api/domain.py    thread-safe status, detection data, and session counters
+frontend/            responsive HTML, CSS, and JavaScript dashboard
+tests/test_operator_dashboard.py
+```
+
+### Install and run on Windows
+
+Open PowerShell in the `Thesis` repository directory:
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+py -m pip install -r requirements.txt
+py -m src.api
+```
+
+Then open `http://127.0.0.1:8000`. Click **Start Inspection** to open the camera
+and reset the in-memory session counters. Click **Stop Inspection** to stop the
+worker and release the camera. Closing the backend also releases it through the
+application shutdown hook. Interactive API documentation is available at
+`http://127.0.0.1:8000/docs`.
+
+The API endpoints are:
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/status` | Model, camera, inspection, FPS, detections, and counts |
+| `POST` | `/api/inspection/start` | Start one camera/inference worker |
+| `POST` | `/api/inspection/stop` | Stop the worker and release the camera |
+| `GET` | `/api/video-feed` | Annotated MJPEG stream |
+
+Repeated Start requests are idempotent and cannot create duplicate processing
+loops. Stop is also safe when inspection is already stopped.
+
+### Camera and model selection
+
+Camera index `0` is the default. Select another OpenCV camera index before launch:
+
+```powershell
+$env:LEMURU_CAMERA_INDEX = "1"
+py -m src.api
+```
+
+By default, the backend recursively finds every `best.pt` below
+`models/yolov8n/` and loads the file with the newest modification time. This
+supports the existing `models/yolov8n/run_*/weights/best.pt` convention. To use a
+specific repository-relative or absolute file:
+
+```powershell
+$env:LEMURU_WEIGHTS = "models\yolov8n\run_001\weights\best.pt"
+py -m src.api
+```
+
+The default confidence threshold is `0.25`. It can be overridden for a runtime
+trial with `$env:LEMURU_CONFIDENCE = "0.30"`. The chosen value and active model are
+reported by the API rather than hard-coded in the dashboard. CPU or CUDA is
+selected automatically. If weights, model dependencies, or the camera are
+unavailable, the API and dashboard stay online and show an actionable error.
+
+### Temporary anti-double-counting method
+
+Version 1 uses a lightweight temporal/spatial association method. A same-class
+box is treated as the same fish when it overlaps a recent box or its center remains
+near that box. That track survives missed detections for 1.25 seconds. Continuous
+visibility therefore increments the session once, while a fish that leaves for
+longer than the timeout and re-enters is counted as a new item. This logic is
+isolated in `SessionCounter` so a proper conveyor-aware tracker can replace it.
+
+This is not a production tracking algorithm: close/overlapping same-class fish,
+abrupt motion, occlusion longer than the timeout, or a stationary fish removed and
+replaced in the same location can cause under- or over-counting. Counts are held in
+memory and reset on each successful Start; they are not persisted.
+
+### Dashboard tests
+
+The model discovery, detection serialization, anti-double-counting, repeated Start,
+and idempotent Stop tests do not need a webcam, GPU, FastAPI server, or model file:
+
+```powershell
+py -m unittest tests.test_operator_dashboard -v
+```
+
+Version 1 is intended for a single local operator. It has no authentication,
+database/history, camera calibration, conveyor synchronization, actuator control,
+WebSocket metadata, or production multi-object tracking. A recommended Version 2
+step is to validate ByteTrack-style persistent object IDs with recorded conveyor
+footage, then count line crossings instead of track appearances.
+
 ## 1. Audit the raw dataset
 
 Run the audit stages in order:

@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#122033" />
+    <title>Sardinella Lemuru Classification System</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand-mark" aria-hidden="true">SL</div>
+      <div class="brand-copy">
+        <p>Quality inspection station</p>
+        <h1>Sardinella Lemuru Classification System</h1>
+      </div>
+      <div class="header-statuses" aria-label="System statuses">
+        <span class="status-pill neutral" id="system-pill"><i></i>System checking</span>
+        <span class="status-pill neutral" id="camera-pill"><i></i>Camera disconnected</span>
+        <span class="status-pill neutral" id="model-pill"><i></i>Model checking</span>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="toolbar" aria-label="Inspection controls">
+        <div>
+          <p class="eyebrow">Operator dashboard</p>
+          <h2>Live quality inspection</h2>
+        </div>
+        <div class="controls">
+          <span class="inspection-state neutral" id="inspection-state"><i></i>Stopped</span>
+          <button class="button primary" id="start-button" type="button">Start Inspection</button>
+          <button class="button secondary" id="stop-button" type="button" disabled>Stop Inspection</button>
+        </div>
+      </section>
+
+      <div class="alert hidden" id="alert" role="status"></div>
+
+      <section class="main-grid">
+        <article class="panel camera-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Camera 01</p>
+              <h3>Live annotated feed</h3>
+            </div>
+            <span class="live-badge neutral" id="live-badge">OFFLINE</span>
+          </div>
+          <div class="video-stage">
+            <img id="video-feed" alt="Annotated webcam inspection feed" />
+            <div class="video-placeholder" id="video-placeholder">
+              <div class="camera-glyph" aria-hidden="true"></div>
+              <strong id="placeholder-title">Inspection stopped</strong>
+              <span id="placeholder-copy">Start inspection to open the local camera.</span>
+            </div>
+            <div class="feed-footer">
+              <span>YOLOv8 annotated stream</span>
+              <span id="feed-fps">0.0 FPS</span>
+            </div>
+          </div>
+        </article>
+
+        <aside class="panel result-panel" id="result-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Latest valid detection</p>
+              <h3>Current classification</h3>
+            </div>
+          </div>
+          <div class="result-empty" id="result-empty">
+            <span class="result-icon">—</span>
+            <strong>No detection</strong>
+            <p>No fish is currently detected in the frame.</p>
+          </div>
+          <div class="result-active hidden" id="result-active">
+            <span class="decision neutral" id="decision">ACCEPTED</span>
+            <p class="result-label" id="result-label">Class A</p>
+            <p class="confidence" id="confidence">0.0%</p>
+            <span>model confidence</span>
+            <div class="confidence-track" aria-hidden="true"><i id="confidence-bar"></i></div>
+          </div>
+          <div class="result-note">
+            <span>Classification policy</span>
+            <p>Class A–C are accepted. “Rejected” is rejected.</p>
+          </div>
+        </aside>
+      </section>
+
+      <section class="metrics-grid" aria-label="Runtime information">
+        <article class="metric-card"><span>Camera</span><strong id="camera-metric">Disconnected</strong><small id="camera-index">Local device</small></article>
+        <article class="metric-card"><span>Model</span><strong id="model-metric">Checking</strong><small id="model-name">No model loaded</small></article>
+        <article class="metric-card"><span>Processing rate</span><strong id="fps-metric">0.0 FPS</strong><small>Current inference stream</small></article>
+        <article class="metric-card total-card"><span>Total detections</span><strong id="total-count">0</strong><small>Current inspection session</small></article>
+      </section>
+
+      <section class="panel counters-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Session totals</p>
+            <h3>Classification counters</h3>
+          </div>
+          <span class="threshold">Confidence threshold <strong id="threshold">25%</strong></span>
+        </div>
+        <div class="counter-grid">
+          <article class="counter accepted"><span>Class A</span><strong id="class-a-count">0</strong><small>Accepted</small></article>
+          <article class="counter accepted"><span>Class B</span><strong id="class-b-count">0</strong><small>Accepted</small></article>
+          <article class="counter accepted"><span>Class C</span><strong id="class-c-count">0</strong><small>Accepted</small></article>
+          <article class="counter rejected"><span>Rejected</span><strong id="rejected-count">0</strong><small>Rejected</small></article>
+        </div>
+      </section>
+    </main>
+
+    <script src="/assets/app.js" defer></script>
+  </body>
+</html>
+
