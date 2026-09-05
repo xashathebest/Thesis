@@ -1,11 +1,12 @@
 const $ = (id) => document.getElementById(id);
 const elements = {
-  systemPill: $("system-pill"), cameraPill: $("camera-pill"), modelPill: $("model-pill"),
+  systemPill: $("system-pill"), cameraPill: $("camera-pill"), modelPill: $("model-pill"), trackerPill: $("tracker-pill"),
   inspectionState: $("inspection-state"), liveBadge: $("live-badge"), alert: $("alert"),
-  start: $("start-button"), stop: $("stop-button"), video: $("video-feed"),
+  start: $("start-button"), stop: $("stop-button"), reset: $("reset-button"), video: $("video-feed"),
   placeholder: $("video-placeholder"), placeholderTitle: $("placeholder-title"), placeholderCopy: $("placeholder-copy"),
-  empty: $("result-empty"), active: $("result-active"), resultPanel: $("result-panel"),
+  empty: $("result-empty"), active: $("result-active"), resultPanel: $("result-panel"), resultFish: $("result-fish"),
   decision: $("decision"), resultLabel: $("result-label"), confidence: $("confidence"), confidenceBar: $("confidence-bar"),
+  trackChips: $("track-chips"), historyEmpty: $("history-empty"), historyWrap: $("history-table-wrap"), historyBody: $("history-body"),
 };
 
 let streamAttached = false;
@@ -24,7 +25,7 @@ function stateClass(value) {
 
 function setPill(element, text, state) {
   element.className = `status-pill ${stateClass(state)}`;
-  element.innerHTML = `<i></i>${text}`;
+  element.replaceChildren(document.createElement("i"), document.createTextNode(text));
 }
 
 function attachStream() {
@@ -38,18 +39,73 @@ elements.video.addEventListener("load", () => {
   elements.placeholder.classList.add("hidden");
 });
 
+function renderTracks(tracks) {
+  elements.trackChips.replaceChildren();
+  if (!tracks.length) {
+    const empty = document.createElement("span");
+    empty.className = "track-empty";
+    empty.textContent = "Waiting for tracked fish";
+    elements.trackChips.append(empty);
+    return;
+  }
+  tracks.slice(0, 4).forEach((track) => {
+    const chip = document.createElement("span");
+    chip.className = `track-chip ${track.current_class === "Rejected" ? "rejected" : ""}`;
+    chip.textContent = `#${track.track_id} ${track.current_class} ${Number(track.confidence_percent).toFixed(1)}%`;
+    elements.trackChips.append(chip);
+  });
+  if (tracks.length > 4) {
+    const extra = document.createElement("span");
+    extra.className = "track-empty";
+    extra.textContent = `+${tracks.length - 4} more`;
+    elements.trackChips.append(extra);
+  }
+}
+
+function formatTime(timestamp) {
+  const parsed = new Date(timestamp);
+  return Number.isNaN(parsed.getTime()) ? timestamp : parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function tableCell(label, value, className = "") {
+  const cell = document.createElement("td");
+  cell.dataset.label = label;
+  cell.className = className;
+  cell.textContent = value;
+  return cell;
+}
+
+function renderHistory(history) {
+  elements.historyEmpty.classList.toggle("hidden", history.length > 0);
+  elements.historyWrap.classList.toggle("hidden", history.length === 0);
+  elements.historyBody.replaceChildren();
+  history.forEach((event) => {
+    const row = document.createElement("tr");
+    row.append(
+      tableCell("Fish ID", event.fish_label),
+      tableCell("Time", formatTime(event.timestamp)),
+      tableCell("Class", event.final_class),
+      tableCell("Confidence", `${Number(event.confidence_percent).toFixed(1)}%`),
+      tableCell("Decision", event.decision, `history-decision ${event.decision === "REJECTED" ? "rejected" : "accepted"}`),
+    );
+    elements.historyBody.append(row);
+  });
+}
+
 function render(data) {
   const inspection = data.inspection_status;
   setPill(elements.systemPill, `System ${titleCase(data.system_status)}`, data.system_status);
   setPill(elements.cameraPill, `Camera ${titleCase(data.camera_status)}`, data.camera_status);
   setPill(elements.modelPill, `Model ${titleCase(data.model_status)}`, data.model_status);
+  setPill(elements.trackerPill, `Tracker ${titleCase(data.tracker_status)}`, data.tracker_status);
 
   elements.inspectionState.className = `inspection-state ${stateClass(inspection)}`;
-  elements.inspectionState.innerHTML = `<i></i>${titleCase(inspection)}`;
+  elements.inspectionState.replaceChildren(document.createElement("i"), document.createTextNode(titleCase(inspection)));
   elements.liveBadge.className = `live-badge ${stateClass(inspection)}`;
   elements.liveBadge.textContent = inspection === "running" ? "LIVE" : inspection.toUpperCase();
   elements.start.disabled = ["starting", "running"].includes(inspection) || data.model_status !== "ready";
   elements.stop.disabled = !["starting", "running"].includes(inspection);
+  elements.reset.disabled = inspection === "starting";
 
   if (["starting", "running"].includes(inspection)) {
     attachStream();
@@ -58,11 +114,10 @@ function render(data) {
     streamAttached = false;
     streamReady = false;
   }
-  const showVideo = inspection === "running" && streamReady;
-  elements.placeholder.classList.toggle("hidden", showVideo);
+  elements.placeholder.classList.toggle("hidden", inspection === "running" && streamReady);
   if (inspection === "starting") {
-    elements.placeholderTitle.textContent = "Opening camera";
-    elements.placeholderCopy.textContent = "The local inspection worker is starting.";
+    elements.placeholderTitle.textContent = "Opening camera and tracker";
+    elements.placeholderCopy.textContent = "The local ByteTrack inspection worker is starting.";
   } else if (inspection === "errored") {
     elements.placeholderTitle.textContent = "Inspection unavailable";
     elements.placeholderCopy.textContent = data.message;
@@ -71,33 +126,42 @@ function render(data) {
     elements.placeholderCopy.textContent = "Start inspection to open the local camera.";
   }
 
-  const showAlert = data.model_status !== "ready" || inspection === "errored";
+  const showAlert = data.model_status !== "ready" || inspection === "errored" || data.tracker_status === "error";
   elements.alert.classList.toggle("hidden", !showAlert);
   elements.alert.textContent = data.message;
 
-  const detection = data.current_detection;
-  elements.empty.classList.toggle("hidden", Boolean(detection));
-  elements.active.classList.toggle("hidden", !detection);
-  elements.resultPanel.classList.toggle("is-rejected", detection?.decision === "REJECTED");
-  if (detection) {
-    elements.decision.textContent = detection.decision;
-    elements.decision.className = `decision ${detection.decision === "REJECTED" ? "rejected" : ""}`;
-    elements.resultLabel.textContent = detection.class_name;
-    elements.confidence.textContent = `${detection.confidence_percent.toFixed(1)}%`;
-    elements.confidenceBar.style.width = `${Math.min(100, detection.confidence_percent)}%`;
+  const event = data.latest_event;
+  elements.empty.classList.toggle("hidden", Boolean(event));
+  elements.active.classList.toggle("hidden", !event);
+  elements.resultPanel.classList.toggle("is-rejected", event?.decision === "REJECTED");
+  if (event) {
+    elements.decision.textContent = event.decision;
+    elements.decision.className = `decision ${event.decision === "REJECTED" ? "rejected" : ""}`;
+    elements.resultFish.textContent = event.fish_label;
+    elements.resultLabel.textContent = event.final_class;
+    elements.confidence.textContent = `${Number(event.confidence_percent).toFixed(1)}%`;
+    elements.confidenceBar.style.width = `${Math.min(100, event.confidence_percent)}%`;
   }
 
-  $("feed-fps").textContent = `${data.fps.toFixed(1)} FPS`;
-  $("fps-metric").textContent = `${data.fps.toFixed(1)} FPS`;
+  const fps = Number(data.fps || 0);
+  $("feed-fps").textContent = `${fps.toFixed(1)} FPS`;
+  $("fps-metric").textContent = `${fps.toFixed(1)} FPS`;
   $("camera-metric").textContent = titleCase(data.camera_status);
   $("model-metric").textContent = titleCase(data.model_status);
   $("model-name").textContent = data.active_model || "No model loaded";
+  $("active-fish-count").textContent = data.active_fish_count;
+  $("active-fish-inline").textContent = data.active_fish_count;
+  $("tracker-summary").textContent = `${titleCase(data.tracking_config.tracker.replace(".yaml", ""))} ${titleCase(data.tracker_status)}`;
   $("threshold").textContent = `${Math.round(data.confidence_threshold * 100)}%`;
   $("total-count").textContent = data.counters.total;
   $("class-a-count").textContent = data.counters["Class A"];
   $("class-b-count").textContent = data.counters["Class B"];
   $("class-c-count").textContent = data.counters["Class C"];
   $("rejected-count").textContent = data.counters.Rejected;
+  $("history-limit").textContent = `Newest ${data.tracking_config.history_limit} events`;
+  $("line-description").textContent = `${titleCase(data.tracking_config.conveyor_direction)} - ${Math.round(data.tracking_config.line_position * 100)}% line`;
+  renderTracks(data.active_tracks);
+  renderHistory(data.recent_history);
 }
 
 function renderBackendUnavailable() {
@@ -106,6 +170,7 @@ function renderBackendUnavailable() {
   elements.alert.textContent = "Cannot reach the local Python backend. Check that it is running, then reload this page.";
   elements.start.disabled = true;
   elements.stop.disabled = true;
+  elements.reset.disabled = true;
 }
 
 async function getStatus() {
@@ -118,11 +183,12 @@ async function getStatus() {
   }
 }
 
-async function control(action) {
+async function postControl(path) {
   elements.start.disabled = true;
   elements.stop.disabled = true;
+  elements.reset.disabled = true;
   try {
-    const response = await fetch(`/api/inspection/${action}`, { method: "POST" });
+    const response = await fetch(path, { method: "POST" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     render(await response.json());
   } catch (_) {
@@ -130,7 +196,8 @@ async function control(action) {
   }
 }
 
-elements.start.addEventListener("click", () => control("start"));
-elements.stop.addEventListener("click", () => control("stop"));
+elements.start.addEventListener("click", () => postControl("/api/inspection/start"));
+elements.stop.addEventListener("click", () => postControl("/api/inspection/stop"));
+elements.reset.addEventListener("click", () => postControl("/api/session/reset"));
 getStatus();
 setInterval(getStatus, 700);

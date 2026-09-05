@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.api.camera import CameraInspectionService
-from src.api.domain import InspectionState
+from src.api.domain import InspectionState, TrackingConfig
 from src.api.model import YoloModel, resolve_weights_path
 from src.preprocessing.dataset_utils import load_yaml_file, project_root
 
@@ -25,10 +25,24 @@ IMAGE_SIZE = int(YOLO_CONFIG.get("imgsz", 640))
 MODEL_FAMILY = Path(str(YOLO_CONFIG.get("model", "yolov8n.yaml"))).stem
 CAMERA_INDEX = int(os.getenv("LEMURU_CAMERA_INDEX", "0"))
 WEIGHTS_PATH = resolve_weights_path(REPO_ROOT, os.getenv("LEMURU_WEIGHTS"))
+TRACKING_CONFIG = TrackingConfig(
+    tracker=os.getenv("LEMURU_TRACKER", "bytetrack.yaml"),
+    line_orientation=os.getenv("LEMURU_LINE_ORIENTATION", "vertical").lower(),
+    line_position=float(os.getenv("LEMURU_LINE_POSITION", "0.65")),
+    conveyor_direction=os.getenv("LEMURU_CONVEYOR_DIRECTION", "left_to_right").lower(),
+    track_timeout=float(os.getenv("LEMURU_TRACK_TIMEOUT", "1.5")),
+    history_limit=int(os.getenv("LEMURU_HISTORY_LIMIT", "25")),
+)
 
-state = InspectionState()
+state = InspectionState(TRACKING_CONFIG)
 state.confidence_threshold = CONFIDENCE
-model = YoloModel(WEIGHTS_PATH, confidence_threshold=CONFIDENCE, imgsz=IMAGE_SIZE, model_family=MODEL_FAMILY)
+model = YoloModel(
+    WEIGHTS_PATH,
+    confidence_threshold=CONFIDENCE,
+    imgsz=IMAGE_SIZE,
+    model_family=MODEL_FAMILY,
+    tracker=TRACKING_CONFIG.tracker,
+)
 service = CameraInspectionService(state, model, camera_index=CAMERA_INDEX)
 
 
@@ -42,7 +56,7 @@ async def lifespan(_: FastAPI):
     service.stop()
 
 
-app = FastAPI(title="Sardinella Lemuru Classification API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Sardinella Lemuru Classification API", version="2.0.0", lifespan=lifespan)
 app.mount("/assets", StaticFiles(directory=FRONTEND_DIR), name="assets")
 
 
@@ -66,6 +80,18 @@ def start_inspection() -> dict[str, object]:
 def stop_inspection() -> dict[str, object]:
     stopped = service.stop()
     return {"stopped": stopped, **state.snapshot()}
+
+
+@app.post("/api/session/reset")
+def reset_session() -> dict[str, object]:
+    service.reset_session()
+    return {"reset": True, **state.snapshot()}
+
+
+@app.get("/api/history")
+def get_history() -> dict[str, object]:
+    snapshot = state.snapshot()
+    return {"latest_event": snapshot["latest_event"], "recent_history": snapshot["recent_history"]}
 
 
 def _mjpeg_frames():

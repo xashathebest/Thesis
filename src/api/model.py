@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 from src.api.domain import CLASS_NAMES, Detection
@@ -38,14 +39,17 @@ class YoloModel:
         confidence_threshold: float = 0.25,
         imgsz: int = 640,
         model_family: str = "yolov8n",
+        tracker: str = "bytetrack.yaml",
     ) -> None:
         self.weights_path = weights_path
         self.confidence_threshold = confidence_threshold
         self.imgsz = imgsz
         self.model_family = model_family
+        self.tracker = tracker
         self.model: Any | None = None
         self.device = "auto"
         self.error: str | None = None
+        self._inference_lock = RLock()
 
     @property
     def name(self) -> str | None:
@@ -71,15 +75,20 @@ class YoloModel:
             return False
 
     def predict(self, frame: Any) -> tuple[Any, list[Detection]]:
+        """Run one stateful ByteTrack-enabled YOLO inference pass."""
+
         if self.model is None:
             raise RuntimeError(self.error or "YOLO model is not loaded.")
-        results = self.model.predict(
-            source=frame,
-            conf=self.confidence_threshold,
-            imgsz=self.imgsz,
-            device=self.device,
-            verbose=False,
-        )
+        with self._inference_lock:
+            results = self.model.track(
+                source=frame,
+                conf=self.confidence_threshold,
+                imgsz=self.imgsz,
+                device=self.device,
+                tracker=self.tracker,
+                persist=True,
+                verbose=False,
+            )
         if not results:
             return frame, []
 
@@ -91,6 +100,7 @@ class YoloModel:
                 class_id = int(box.cls.item()) if box.cls is not None else -1
                 confidence = float(box.conf.item()) if box.conf is not None else 0.0
                 bbox = tuple(float(value) for value in box.xyxy[0].tolist())
+                track_id = int(box.id.item()) if getattr(box, "id", None) is not None else None
                 class_name = str(result.names.get(class_id, f"Class {class_id}"))
                 # Ignore unexpected labels rather than presenting an invalid thesis grade.
                 if class_name not in CLASS_NAMES:
@@ -101,6 +111,25 @@ class YoloModel:
                         class_name=class_name,
                         confidence=confidence,
                         bbox=bbox,  # type: ignore[arg-type]
+                        track_id=track_id,
                     )
                 )
-        return result.plot(), detections
+        return frame, detections
+
+    def reset_tracker(self) -> None:
+        """Best-effort reset of Ultralytics' persistent tracker state.
+
+        Access is serialized with inference. The domain tracker is also reset, so
+        an Ultralytics version without a public tracker ``reset`` method remains
+        safe: the next observation becomes a fresh baseline and cannot immediately
+        create a line-crossing event.
+        """
+
+        if self.model is None:
+            return
+        with self._inference_lock:
+            predictor = getattr(self.model, "predictor", None)
+            for tracker in getattr(predictor, "trackers", None) or []:
+                reset = getattr(tracker, "reset", None)
+                if callable(reset):
+                    reset()

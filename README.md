@@ -107,31 +107,32 @@ python -m pip install -r requirements.txt
 
 Run commands from this directory so configuration-relative paths resolve correctly.
 
-## Version 1 operator dashboard
+## Version 2 multi-fish operator dashboard
 
 The local dashboard adds an operator-facing path alongside the existing research
 and training commands. It does not replace the training or command-line inference
 pipeline.
 
 ```text
-OpenCV webcam -> one Python worker -> loaded YOLOv8 model
-              -> annotated JPEG frames -> FastAPI MJPEG stream -> browser dashboard
-              -> detection metadata   -> polled JSON status  -> counters/results
+OpenCV webcam -> one Python worker -> YOLOv8 detection + ByteTrack IDs
+              -> per-track confidence-weighted class evidence
+              -> direction-aware virtual-line crossing -> one inspection event
+              -> annotated MJPEG + polled JSON -> responsive browser dashboard
 ```
 
 The backend is deliberately the sole camera owner. It loads one model at startup,
-runs inference once per captured frame, and shares the resulting annotated frame
-and metadata with every API consumer. FastAPI also serves the dependency-free
-responsive frontend, so no Node.js installation or separate frontend build is
-needed for Version 1.
+runs one Ultralytics `model.track` inference per captured frame, and shares the
+resulting annotated frame and metadata with every API consumer. FastAPI also serves
+the dependency-free responsive frontend, so no Node.js installation or separate
+frontend build is needed.
 
 ### New dashboard structure
 
 ```text
 src/api/app.py       FastAPI routes, startup/shutdown, and MJPEG response
 src/api/camera.py    single camera/inference worker and lifecycle
-src/api/model.py     newest-weight discovery and YOLO result adapter
-src/api/domain.py    thread-safe status, detection data, and session counters
+src/api/model.py     weight discovery and persistent ByteTrack-enabled inference
+src/api/domain.py    tracks, temporal voting, crossing events, history, and counters
 frontend/            responsive HTML, CSS, and JavaScript dashboard
 tests/test_operator_dashboard.py
 ```
@@ -157,9 +158,11 @@ The API endpoints are:
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/status` | Model, camera, inspection, FPS, detections, and counts |
+| `GET` | `/api/status` | Runtime state, active tracks, latest event, history, and counts |
 | `POST` | `/api/inspection/start` | Start one camera/inference worker |
 | `POST` | `/api/inspection/stop` | Stop the worker and release the camera |
+| `POST` | `/api/session/reset` | Reset active tracks, completed events, and counters |
+| `GET` | `/api/history` | Latest and recent completed inspection events |
 | `GET` | `/api/video-feed` | Annotated MJPEG stream |
 
 Repeated Start requests are idempotent and cannot create duplicate processing
@@ -190,34 +193,78 @@ reported by the API rather than hard-coded in the dashboard. CPU or CUDA is
 selected automatically. If weights, model dependencies, or the camera are
 unavailable, the API and dashboard stay online and show an actionable error.
 
-### Temporary anti-double-counting method
+### Tracking, temporal classification, and event counting
 
-Version 1 uses a lightweight temporal/spatial association method. A same-class
-box is treated as the same fish when it overlaps a recent box or its center remains
-near that box. That track survives missed detections for 1.25 seconds. Continuous
-visibility therefore increments the session once, while a fish that leaves for
-longer than the timeout and re-enters is counted as a new item. This logic is
-isolated in `SessionCounter` so a proper conveyor-aware tracker can replace it.
+Version 2 uses Ultralytics' built-in ByteTrack integration. ByteTrack assigns each
+visible fish a persistent numeric ID from its motion and bounding-box detections;
+association does not require the predicted class to remain unchanged. The domain
+layer maintains each ID's current/previous center, box, timestamps, current class,
+confidence history, and counted state. An unseen track expires after the configured
+timeout and never creates an event if it did not cross the line.
 
-This is not a production tracking algorithm: close/overlapping same-class fish,
-abrupt motion, occlusion longer than the timeout, or a stationary fish removed and
-replaced in the same location can cause under- or over-counting. Counts are held in
-memory and reset on each successful Start; they are not persisted.
+Class output is finalized only at a valid crossing. Each observation adds its
+confidence to that class's vote. The class with the largest confidence sum wins,
+and the event confidence is the mean confidence of observations for the winning
+class. This lets repeated evidence outweigh a single fluctuating prediction without
+using only the best frame.
+
+The default is a vertical line at 65% of frame width with left-to-right motion. A
+crossing requires the previous center to be before the line and the new center to
+be on or beyond it. Reverse movement does not count. Each track has its own counted
+flag, so several fish can cross together without a global cooldown and a completed
+track cannot count again while it remains visible.
+
+Counters now represent **completed inspection events**, never raw frames or merely
+visible tracks. The newest event appears in Current Classification and up to 25
+newest-first events appear in the in-memory history. **Reset Session** clears
+counters, history, latest event, all active domain tracks, and the underlying
+tracker when its installed Ultralytics version exposes reset support. The next
+observation establishes a fresh movement baseline, preventing an immediate stale
+crossing after reset. Reset does not reload the model or stop the camera.
+
+### Tracking configuration
+
+Set environment variables before starting the backend:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `LEMURU_TRACKER` | `bytetrack.yaml` | Ultralytics tracker configuration/name |
+| `LEMURU_LINE_ORIENTATION` | `vertical` | `vertical` or `horizontal` |
+| `LEMURU_LINE_POSITION` | `0.65` | Fraction of frame width/height, strictly between 0 and 1 |
+| `LEMURU_CONVEYOR_DIRECTION` | `left_to_right` | `left_to_right`, `right_to_left`, `top_to_bottom`, or `bottom_to_top` |
+| `LEMURU_TRACK_TIMEOUT` | `1.5` | Seconds an unseen domain track remains active |
+| `LEMURU_HISTORY_LIMIT` | `25` | Maximum recent events retained in memory |
+
+Left/right directions require a vertical line; top/bottom directions require a
+horizontal line. For example:
+
+```powershell
+$env:LEMURU_LINE_ORIENTATION = "horizontal"
+$env:LEMURU_LINE_POSITION = "0.60"
+$env:LEMURU_CONVEYOR_DIRECTION = "top_to_bottom"
+$env:LEMURU_TRACK_TIMEOUT = "2.0"
+py -m src.api
+```
 
 ### Dashboard tests
 
-The model discovery, detection serialization, anti-double-counting, repeated Start,
-and idempotent Stop tests do not need a webcam, GPU, FastAPI server, or model file:
+The model discovery, track lifecycle, class fluctuation, simultaneous crossing,
+direction, one-event-only, voting, history, reset, repeated Start, and idempotent
+Stop tests do not need a webcam, GPU, FastAPI server, or model file:
 
 ```powershell
 py -m unittest tests.test_operator_dashboard -v
 ```
 
-Version 1 is intended for a single local operator. It has no authentication,
-database/history, camera calibration, conveyor synchronization, actuator control,
-WebSocket metadata, or production multi-object tracking. A recommended Version 2
-step is to validate ByteTrack-style persistent object IDs with recorded conveyor
-footage, then count line crossings instead of track appearances.
+Version 2 is intended for a single local operator. History is volatile and it has
+no authentication, database, physical conveyor synchronization, actuator control,
+or WebSocket transport. ByteTrack can change IDs after long occlusion or severe
+overlap; abrupt motion between frames can also skip or falsely cross a narrow line.
+Before production use, validate tracker thresholds, line position, camera angle,
+conveyor direction, and minimum detection confidence with labeled conveyor video.
+A recommended Version 3 step is a replay/evaluation harness that measures ID
+switches, missed crossings, double counts, and final grading accuracy against
+manually annotated conveyor sequences.
 
 ## 1. Audit the raw dataset
 
