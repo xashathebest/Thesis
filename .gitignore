@@ -31,10 +31,8 @@ Thumbs.db
 *.engine
 *.mlmodel
 
-# Immutable source data and generated image derivatives
-dataset/raw/**/*
-!dataset/raw/README.md
-!dataset/raw/**/.gitkeep
+# Generated image derivatives. Immutable raw images are versioned with Git LFS
+# using the repository's .gitattributes rules.
 dataset/cleaned/**/*
 dataset/standardized/**/*
 dataset/masks/**/*
