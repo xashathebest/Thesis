@@ -107,6 +107,165 @@ python -m pip install -r requirements.txt
 
 Run commands from this directory so configuration-relative paths resolve correctly.
 
+## Version 2 multi-fish operator dashboard
+
+The local dashboard adds an operator-facing path alongside the existing research
+and training commands. It does not replace the training or command-line inference
+pipeline.
+
+```text
+OpenCV webcam -> one Python worker -> YOLOv8 detection + ByteTrack IDs
+              -> per-track confidence-weighted class evidence
+              -> direction-aware virtual-line crossing -> one inspection event
+              -> annotated MJPEG + polled JSON -> responsive browser dashboard
+```
+
+The backend is deliberately the sole camera owner. It loads one model at startup,
+runs one Ultralytics `model.track` inference per captured frame, and shares the
+resulting annotated frame and metadata with every API consumer. FastAPI also serves
+the dependency-free responsive frontend, so no Node.js installation or separate
+frontend build is needed.
+
+### New dashboard structure
+
+```text
+src/api/app.py       FastAPI routes, startup/shutdown, and MJPEG response
+src/api/camera.py    single camera/inference worker and lifecycle
+src/api/model.py     weight discovery and persistent ByteTrack-enabled inference
+src/api/domain.py    tracks, temporal voting, crossing events, history, and counters
+frontend/            responsive HTML, CSS, and JavaScript dashboard
+tests/test_operator_dashboard.py
+```
+
+### Install and run on Windows
+
+Open PowerShell in the `Thesis` repository directory:
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+py -m pip install -r requirements.txt
+py -m src.api
+```
+
+Then open `http://127.0.0.1:8000`. Click **Start Inspection** to open the camera
+and reset the in-memory session counters. Click **Stop Inspection** to stop the
+worker and release the camera. Closing the backend also releases it through the
+application shutdown hook. Interactive API documentation is available at
+`http://127.0.0.1:8000/docs`.
+
+The API endpoints are:
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/status` | Runtime state, active tracks, latest event, history, and counts |
+| `POST` | `/api/inspection/start` | Start one camera/inference worker |
+| `POST` | `/api/inspection/stop` | Stop the worker and release the camera |
+| `POST` | `/api/session/reset` | Reset active tracks, completed events, and counters |
+| `GET` | `/api/history` | Latest and recent completed inspection events |
+| `GET` | `/api/video-feed` | Annotated MJPEG stream |
+
+Repeated Start requests are idempotent and cannot create duplicate processing
+loops. Stop is also safe when inspection is already stopped.
+
+### Camera and model selection
+
+Camera index `0` is the default. Select another OpenCV camera index before launch:
+
+```powershell
+$env:LEMURU_CAMERA_INDEX = "1"
+py -m src.api
+```
+
+By default, the backend recursively finds every `best.pt` below
+`models/yolov8n/` and loads the file with the newest modification time. This
+supports the existing `models/yolov8n/run_*/weights/best.pt` convention. To use a
+specific repository-relative or absolute file:
+
+```powershell
+$env:LEMURU_WEIGHTS = "models\yolov8n\run_001\weights\best.pt"
+py -m src.api
+```
+
+The default confidence threshold is `0.25`. It can be overridden for a runtime
+trial with `$env:LEMURU_CONFIDENCE = "0.30"`. The chosen value and active model are
+reported by the API rather than hard-coded in the dashboard. CPU or CUDA is
+selected automatically. If weights, model dependencies, or the camera are
+unavailable, the API and dashboard stay online and show an actionable error.
+
+### Tracking, temporal classification, and event counting
+
+Version 2 uses Ultralytics' built-in ByteTrack integration. ByteTrack assigns each
+visible fish a persistent numeric ID from its motion and bounding-box detections;
+association does not require the predicted class to remain unchanged. The domain
+layer maintains each ID's current/previous center, box, timestamps, current class,
+confidence history, and counted state. An unseen track expires after the configured
+timeout and never creates an event if it did not cross the line.
+
+Class output is finalized only at a valid crossing. Each observation adds its
+confidence to that class's vote. The class with the largest confidence sum wins,
+and the event confidence is the mean confidence of observations for the winning
+class. This lets repeated evidence outweigh a single fluctuating prediction without
+using only the best frame.
+
+The default is a vertical line at 65% of frame width with left-to-right motion. A
+crossing requires the previous center to be before the line and the new center to
+be on or beyond it. Reverse movement does not count. Each track has its own counted
+flag, so several fish can cross together without a global cooldown and a completed
+track cannot count again while it remains visible.
+
+Counters now represent **completed inspection events**, never raw frames or merely
+visible tracks. The newest event appears in Current Classification and up to 25
+newest-first events appear in the in-memory history. **Reset Session** clears
+counters, history, latest event, all active domain tracks, and the underlying
+tracker when its installed Ultralytics version exposes reset support. The next
+observation establishes a fresh movement baseline, preventing an immediate stale
+crossing after reset. Reset does not reload the model or stop the camera.
+
+### Tracking configuration
+
+Set environment variables before starting the backend:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `LEMURU_TRACKER` | `bytetrack.yaml` | Ultralytics tracker configuration/name |
+| `LEMURU_LINE_ORIENTATION` | `vertical` | `vertical` or `horizontal` |
+| `LEMURU_LINE_POSITION` | `0.65` | Fraction of frame width/height, strictly between 0 and 1 |
+| `LEMURU_CONVEYOR_DIRECTION` | `left_to_right` | `left_to_right`, `right_to_left`, `top_to_bottom`, or `bottom_to_top` |
+| `LEMURU_TRACK_TIMEOUT` | `1.5` | Seconds an unseen domain track remains active |
+| `LEMURU_HISTORY_LIMIT` | `25` | Maximum recent events retained in memory |
+
+Left/right directions require a vertical line; top/bottom directions require a
+horizontal line. For example:
+
+```powershell
+$env:LEMURU_LINE_ORIENTATION = "horizontal"
+$env:LEMURU_LINE_POSITION = "0.60"
+$env:LEMURU_CONVEYOR_DIRECTION = "top_to_bottom"
+$env:LEMURU_TRACK_TIMEOUT = "2.0"
+py -m src.api
+```
+
+### Dashboard tests
+
+The model discovery, track lifecycle, class fluctuation, simultaneous crossing,
+direction, one-event-only, voting, history, reset, repeated Start, and idempotent
+Stop tests do not need a webcam, GPU, FastAPI server, or model file:
+
+```powershell
+py -m unittest tests.test_operator_dashboard -v
+```
+
+Version 2 is intended for a single local operator. History is volatile and it has
+no authentication, database, physical conveyor synchronization, actuator control,
+or WebSocket transport. ByteTrack can change IDs after long occlusion or severe
+overlap; abrupt motion between frames can also skip or falsely cross a narrow line.
+Before production use, validate tracker thresholds, line position, camera angle,
+conveyor direction, and minimum detection confidence with labeled conveyor video.
+A recommended Version 3 step is a replay/evaluation harness that measures ID
+switches, missed crossings, double counts, and final grading accuracy against
+manually annotated conveyor sequences.
+
 ## 1. Audit the raw dataset
 
 Run the audit stages in order:
