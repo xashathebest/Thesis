@@ -194,6 +194,13 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(experiment, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     model = YOLO(experiment["model"])
+    def record_best_epoch(trainer):
+        if trainer.fitness is not None and trainer.fitness == trainer.best_fitness:
+            (run_dir / "best_epoch.json").write_text(
+                json.dumps({"best_epoch": trainer.epoch + 1, "fitness": float(trainer.fitness)}) + "\n",
+                encoding="utf-8",
+            )
+    model.add_callback("on_model_save", record_best_epoch)
     model.train(
         data=str(data_path.resolve()),
         task="segment",

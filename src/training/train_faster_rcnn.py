@@ -1,15 +1,16 @@
 """Training entry point for Faster R-CNN with ResNet50.
 
-This script will eventually train the Faster R-CNN branch using the shared
+This script trains the Faster R-CNN branch using the shared
 dataset and evaluation protocol.
 """
 
 
 def main() -> None:
-    """Placeholder entry point for Faster R-CNN training."""
+    """Delegate to the canonical comparison runner."""
 
-    # TODO: Implement Faster R-CNN training.
-    raise NotImplementedError("Faster R-CNN training is not implemented yet.")
+    import sys
+    from src.training.train_comparison import main as run
+    raise SystemExit(run(["--model", "faster_rcnn", *sys.argv[1:]]))
 
 
 if __name__ == "__main__":

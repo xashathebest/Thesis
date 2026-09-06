@@ -1,0 +1,20 @@
+{
+  "dataset_fingerprint": "ba7e60b4cf43e4212754babe617dae2a646ee8628c0184d3df15afca646c3b7a",
+  "hardware": {
+    "cuda_available": false,
+    "device": "cpu",
+    "packages": {
+      "effdet": null,
+      "numpy": "2.5.2",
+      "torch": "2.14.0",
+      "torchvision": "0.29.0",
+      "ultralytics": "8.4.142"
+    },
+    "processor": "Intel64 Family 6 Model 141 Stepping 1, GenuineIntel"
+  },
+  "metrics": {},
+  "model": "yolo",
+  "notes": "No canonical trained checkpoint or measured test results. Full training not run. CPU-only: full three-model training impractical in this session.",
+  "status": "not_trained",
+  "variant": "YOLOv8n-seg"
+}

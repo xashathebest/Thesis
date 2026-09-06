@@ -1,0 +1,44 @@
+{
+  "Body": {
+    "Precision": null,
+    "Recall": null,
+    "mAP50": null,
+    "mAP50_95": null
+  },
+  "Class A": {
+    "Precision": null,
+    "Recall": null,
+    "mAP50": null,
+    "mAP50_95": null
+  },
+  "Class B": {
+    "Precision": null,
+    "Recall": null,
+    "mAP50": null,
+    "mAP50_95": null
+  },
+  "Class C": {
+    "Precision": null,
+    "Recall": null,
+    "mAP50": null,
+    "mAP50_95": null
+  },
+  "Head": {
+    "Precision": null,
+    "Recall": null,
+    "mAP50": null,
+    "mAP50_95": null
+  },
+  "Rejected": {
+    "Precision": null,
+    "Recall": null,
+    "mAP50": null,
+    "mAP50_95": null
+  },
+  "Tail": {
+    "Precision": null,
+    "Recall": null,
+    "mAP50": null,
+    "mAP50_95": null
+  }
+}

@@ -1,15 +1,16 @@
 """Training entry point for EfficientDet-D3.
 
-This script will eventually train the EfficientDet branch using the shared
+This script trains the EfficientDet branch using the shared
 dataset and evaluation protocol.
 """
 
 
 def main() -> None:
-    """Placeholder entry point for EfficientDet-D3 training."""
+    """Delegate to the canonical comparison runner."""
 
-    # TODO: Implement EfficientDet-D3 training.
-    raise NotImplementedError("EfficientDet-D3 training is not implemented yet.")
+    import sys
+    from src.training.train_comparison import main as run
+    raise SystemExit(run(["--model", "efficientdet_d3", *sys.argv[1:]]))
 
 
 if __name__ == "__main__":
