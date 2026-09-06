@@ -120,7 +120,10 @@ def _read_group_manifest(path: Path, result: SegmentationPreflight) -> dict[str,
 
 
 def _validate_polygon_label(path: Path, class_count: int, result: SegmentationPreflight, split_name: str) -> None:
-    lines = path.read_text(encoding="utf-8").splitlines()
+    lines = path.read_text(encoding="utf-8-sig").splitlines()
+    if not any(line.strip() for line in lines):
+        result.issues.append(SegmentationIssue("ERROR", "Empty polygon label.", str(path)))
+        return
     for line_number, raw_line in enumerate(lines, start=1):
         line = raw_line.strip()
         if not line:
@@ -144,7 +147,33 @@ def _validate_polygon_label(path: Path, class_count: int, result: SegmentationPr
         if any(value < 0.0 or value > 1.0 for value in coordinates):
             result.issues.append(SegmentationIssue("ERROR", f"Polygon coordinates outside [0, 1] on line {line_number}.", str(path)))
             continue
+        points = tuple(zip(coordinates[0::2], coordinates[1::2]))
+        doubled_area = abs(
+            sum(
+                x_value * points[(index + 1) % len(points)][1]
+                - points[(index + 1) % len(points)][0] * y_value
+                for index, (x_value, y_value) in enumerate(points)
+            )
+        )
+        if len(set(points)) < 3 or doubled_area <= 1e-12:
+            result.issues.append(SegmentationIssue("ERROR", f"Degenerate polygon on line {line_number}.", str(path)))
+            continue
         result.instance_counts[split_name][class_id] += 1
+
+
+def _validate_annotation_unit(config: dict[str, object], result: SegmentationPreflight, path: Path) -> None:
+    """Block training unless provenance confirms one instance is one fish."""
+
+    annotation_unit = str(config.get("annotation_unit", "")).strip().casefold()
+    if annotation_unit != "whole_fish":
+        result.issues.append(
+            SegmentationIssue(
+                "ERROR",
+                "Dataset annotation_unit must be 'whole_fish'. Part-level or unverified "
+                "annotations would cause ByteTrack to track and count fish parts.",
+                str(path),
+            )
+        )
 
 
 def validate_segmentation_dataset(
@@ -159,6 +188,7 @@ def validate_segmentation_dataset(
     config = load_yaml_file(dataset_config_path)
     class_names = load_class_mapping(root / "configs" / "classes.yaml", config)
     result = SegmentationPreflight()
+    _validate_annotation_unit(config, result, dataset_config_path)
     if not class_names:
         result.issues.append(SegmentationIssue("ERROR", "Class configuration is empty.", str(dataset_config_path)))
         return result
@@ -189,11 +219,12 @@ def validate_segmentation_dataset(
             if not label_path.exists():
                 result.issues.append(SegmentationIssue("ERROR", "Missing polygon label.", str(image_path)))
                 continue
-            manifest_record = manifest.get(image_path.stem)
-            if manifest_record is None:
-                result.issues.append(SegmentationIssue("ERROR", "Image is absent from the split manifest.", str(image_path)))
-            elif manifest_record[0] != split_name:
-                result.issues.append(SegmentationIssue("ERROR", f"Manifest assigns image to {manifest_record[0]}, not {split_name}.", str(image_path)))
+            if manifest:
+                manifest_record = manifest.get(image_path.stem)
+                if manifest_record is None:
+                    result.issues.append(SegmentationIssue("ERROR", "Image is absent from the split manifest.", str(image_path)))
+                elif manifest_record[0] != split_name:
+                    result.issues.append(SegmentationIssue("ERROR", f"Manifest assigns image to {manifest_record[0]}, not {split_name}.", str(image_path)))
             seen_names[image_path.name].add(split_name)
             seen_hashes[_sha256(image_path)].add(split_name)
             _validate_polygon_label(label_path, len(class_names), result, split_name)

@@ -1,0 +1,35 @@
+# Roboflow v7 source semantics. This is an audit mapping, not permission to
+# train the four-class runtime model from part annotations.
+source_dataset: Dried Fish Quality Grading.v7
+source_annotation_unit: fish_part
+target_annotation_unit: whole_fish
+status: BLOCKED_PENDING_WHOLE_FISH_REVIEW
+
+source_classes:
+  0: Grade_A_Body
+  1: Grade_A_Head
+  2: Grade_A_Tail
+  3: Grade_B_Body
+  4: Grade_B_Head
+  5: Grade_B_Tail
+  6: Grade_C_Body
+  7: Grade_C_Head
+  8: Grade_C_Tail
+  9: Rejected_Body
+  10: Rejected_Head
+  11: Rejected_Tail
+
+quality_prefix_mapping:
+  Grade_A: {class_id: 0, class_name: Class A}
+  Grade_B: {class_id: 1, class_name: Class B}
+  Grade_C: {class_id: 2, class_name: Class C}
+  Rejected: {class_id: 3, class_name: Rejected}
+
+review_requirements:
+  - Draw one tight mask per physical fish; source part boxes are not fish masks.
+  - Associate all visible parts with a physical fish before assigning a final grade.
+  - Adjudicate mixed part grades instead of applying an implicit priority rule.
+  - Mark unresolved overlap or fragments for manual review.
+  - Preserve Roboflow extra.name as the pre-augmentation leakage group.
+  - Rebuild train/validation/test splits at source/specimen group level.
+

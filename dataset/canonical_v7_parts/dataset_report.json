@@ -1,0 +1,129 @@
+{
+  "annotation_unit": "fish_part",
+  "errors": [],
+  "exact_duplicate_leakage": {},
+  "images": 910,
+  "leakage_groups": 337,
+  "rle_masks_converted_to_source_contours": 6,
+  "seed": 42,
+  "source": "Dried Fish Quality Grading.v7i.coco-segmentation",
+  "source_classes": {
+    "0": "Grade_A_Body",
+    "1": "Grade_A_Head",
+    "2": "Grade_A_Tail",
+    "3": "Grade_B_Body",
+    "4": "Grade_B_Head",
+    "5": "Grade_B_Tail",
+    "6": "Grade_C_Body",
+    "7": "Grade_C_Head",
+    "8": "Grade_C_Tail",
+    "9": "Rejected_Body",
+    "10": "Rejected_Head",
+    "11": "Rejected_Tail"
+  },
+  "source_group_leakage": {},
+  "splits": {
+    "test": {
+      "anatomical_regions": {
+        "Body": 506,
+        "Head": 456,
+        "Tail": 275
+      },
+      "annotations": 1237,
+      "classes": {
+        "Grade_A_Body": 72,
+        "Grade_A_Head": 66,
+        "Grade_A_Tail": 66,
+        "Grade_B_Body": 157,
+        "Grade_B_Head": 155,
+        "Grade_B_Tail": 88,
+        "Grade_C_Body": 110,
+        "Grade_C_Head": 74,
+        "Grade_C_Tail": 39,
+        "Rejected_Body": 167,
+        "Rejected_Head": 161,
+        "Rejected_Tail": 82
+      },
+      "empty_images": 0,
+      "images": 115,
+      "quality_groups": {
+        "Class A": 204,
+        "Class B": 400,
+        "Class C": 223,
+        "Rejected": 410
+      }
+    },
+    "train": {
+      "anatomical_regions": {
+        "Body": 2896,
+        "Head": 2689,
+        "Tail": 1657
+      },
+      "annotations": 7242,
+      "classes": {
+        "Grade_A_Body": 449,
+        "Grade_A_Head": 387,
+        "Grade_A_Tail": 380,
+        "Grade_B_Body": 905,
+        "Grade_B_Head": 930,
+        "Grade_B_Tail": 556,
+        "Grade_C_Body": 570,
+        "Grade_C_Head": 425,
+        "Grade_C_Tail": 227,
+        "Rejected_Body": 972,
+        "Rejected_Head": 947,
+        "Rejected_Tail": 494
+      },
+      "empty_images": 3,
+      "images": 680,
+      "quality_groups": {
+        "Class A": 1216,
+        "Class B": 2391,
+        "Class C": 1222,
+        "Rejected": 2413
+      }
+    },
+    "val": {
+      "anatomical_regions": {
+        "Body": 503,
+        "Head": 465,
+        "Tail": 276
+      },
+      "annotations": 1244,
+      "classes": {
+        "Grade_A_Body": 75,
+        "Grade_A_Head": 69,
+        "Grade_A_Tail": 66,
+        "Grade_B_Body": 153,
+        "Grade_B_Head": 150,
+        "Grade_B_Tail": 93,
+        "Grade_C_Body": 104,
+        "Grade_C_Head": 78,
+        "Grade_C_Tail": 36,
+        "Rejected_Body": 171,
+        "Rejected_Head": 168,
+        "Rejected_Tail": 81
+      },
+      "empty_images": 0,
+      "images": 115,
+      "quality_groups": {
+        "Class A": 210,
+        "Class B": 396,
+        "Class C": 218,
+        "Rejected": 420
+      }
+    }
+  },
+  "status": "PASS",
+  "target_ratios": {
+    "test": 0.125,
+    "train": 0.75,
+    "val": 0.125
+  },
+  "tiny_annotations_below_0_1_percent": 7,
+  "unique_hashes": 910,
+  "warnings": [
+    "3 empty training images are deliberately retained as negatives.",
+    "7 annotations occupy under 0.1% of their image."
+  ]
+}

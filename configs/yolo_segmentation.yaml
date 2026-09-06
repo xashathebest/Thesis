@@ -1,24 +1,29 @@
-# Transfer-learned instance-segmentation baseline.
-# A0 intentionally disables augmentation. Add validated A1/A2/A3 profiles as
-# separate config files; do not tune any parameter against the final test set.
+# Transfer-learned instance-segmentation baseline for reviewed whole-fish masks.
+# Do not tune any parameter against the final test set.
 model: yolov8n-seg.pt
-epochs: 50
+imgsz: 640
+epochs: 100
+patience: 20
 batch_size: 8
+optimizer: auto
+learning_rate: 0.01
 seed: 42
 device: auto
 workers: 2
 project_dir: models/yolo_segmentation
-degrees: 0.0
-translate: 0.0
-scale: 0.0
+# Conservative A1 profile for a reviewed whole-fish dataset. Quality depends on
+# subtle color and surface evidence, so photometric augmentation stays modest.
+degrees: 10.0
+translate: 0.05
+scale: 0.15
 shear: 0.0
 perspective: 0.0
-flipud: 0.0
-fliplr: 0.0
-mosaic: 0.0
+flipud: 0.1
+fliplr: 0.5
+mosaic: 0.25
 mixup: 0.0
-copy_paste: 0.0
-hsv_h: 0.0
-hsv_s: 0.0
-hsv_v: 0.0
+copy_paste: 0.1
+hsv_h: 0.01
+hsv_s: 0.15
+hsv_v: 0.10
 erasing: 0.0
