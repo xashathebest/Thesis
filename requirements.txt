@@ -1,6 +1,6 @@
 numpy
 Pillow
-ultralytics
+ultralytics>=8.4.142
 torch
 torchvision
 scikit-learn

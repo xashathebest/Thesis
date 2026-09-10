@@ -81,6 +81,10 @@ button { font: inherit; }
 .alert { border: 1px solid #efc3c3; background: var(--red-soft); color: #8d2727; border-radius: 8px; padding: 11px 14px; margin-bottom: 16px; font-size: 13px; font-weight: 650; }
 .hidden { display: none !important; }
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 11px; box-shadow: 0 2px 7px rgba(24,37,53,.035); }
+.preview-banner { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; padding: 12px 15px; border: 1px solid #e3a62f; border-left: 5px solid #d9880b; border-radius: 8px; background: #fff5d9; color: #593900; }
+.preview-banner strong { font-size: 12px; letter-spacing: .08em; white-space: nowrap; }
+.preview-banner span { font-size: 12px; }
+.preview-disabled { opacity: .55; filter: grayscale(.35); }
 .main-grid { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(280px, .8fr); gap: 16px; }
 .camera-panel, .result-panel, .counters-panel { padding: 17px; }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 13px; }
