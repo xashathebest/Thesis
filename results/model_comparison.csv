@@ -1,1 +1,4 @@
-Model,mAP50,mAP50_95,Precision,Recall,F1,InferenceTime,FPS,ModelSize
+Model,mAP50,mAP50_95,Precision,Recall,F1,InferenceTime,FPS,ModelSize,variant,task,input_size,epochs_completed,best_epoch,mask_precision,mask_recall,mask_map50,mask_map50_95,median_inference_ms,parameter_count,training_time_minutes,evaluation_split,status,notes
+YOLOv8n-seg,,,,,,,,,YOLOv8n-seg,part segmentation,,,,,,,,,,,,not_trained,No canonical trained checkpoint or measured test results. Full training not run. CPU-only: full three-model training impractical in this session.
+Faster R-CNN ResNet50-FPN,,,,,,,,,Faster R-CNN ResNet50-FPN,part detection,,,,,,,,,,,,not_trained,No canonical trained checkpoint or measured test results. Full training not run. CPU-only: full three-model training impractical in this session.
+EfficientDet-D3,,,,,,,,,EfficientDet-D3,part detection,,,,,,,,,,,,not_trained,No canonical trained checkpoint or measured test results. Full training not run. CPU-only: full three-model training impractical in this session. effdet dependency unavailable.

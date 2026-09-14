@@ -28,7 +28,7 @@ def _version(package: str) -> str:
 
 
 def _augmentation_args(config: dict[str, Any]) -> dict[str, float]:
-    """Read an explicit, reproducible augmentation profile (A0 by default)."""
+    """Read the explicit, reproducible augmentation profile."""
 
     keys = ("degrees", "translate", "scale", "shear", "perspective", "flipud", "fliplr", "mosaic", "mixup", "copy_paste", "hsv_h", "hsv_s", "hsv_v", "erasing")
     return {key: float(config.get(key, 0.0)) for key in keys}
@@ -77,7 +77,7 @@ def main() -> int:
     parser.add_argument("--config", type=Path, default=None)
     parser.add_argument("--data", type=Path, default=None)
     parser.add_argument("--manifest", type=Path, default=None)
-    parser.add_argument("--imgsz", type=int, required=True, help="Explicit resolution for the 640/960/1280 ablation")
+    parser.add_argument("--imgsz", type=int, default=None, help="Override the configured image size")
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--device", default=None)
@@ -108,7 +108,8 @@ def main() -> int:
         print("ERROR: Install project requirements before training.")
         return 1
 
-    run_name = args.run_name or f"segment_{args.imgsz}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    image_size = args.imgsz or int(config.get("imgsz", 640))
+    run_name = args.run_name or f"segment_{image_size}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     output_root = root / str(config.get("project_dir", "models/yolo_segmentation"))
     output_root.mkdir(parents=True, exist_ok=True)
     experiment = {
@@ -117,9 +118,12 @@ def main() -> int:
         "transfer_learning": True,
         "data": str(data_path),
         "split_manifest": str(manifest_path),
-        "image_size": args.imgsz,
+        "image_size": image_size,
         "epochs": args.epochs or int(config.get("epochs", 50)),
         "batch_size": args.batch_size or int(config.get("batch_size", 8)),
+        "patience": int(config.get("patience", 20)),
+        "optimizer": str(config.get("optimizer", "auto")),
+        "learning_rate": float(config.get("learning_rate", 0.01)),
         "seed": int(config.get("seed", 42)),
         "augmentation": _augmentation_args(config),
         "device": _resolve_device(args.device if args.device is not None else config.get("device")),
@@ -139,9 +143,12 @@ def main() -> int:
     model.train(
         data=str(runtime_data_path),
         task="segment",
-        imgsz=args.imgsz,
+        imgsz=experiment["image_size"],
         epochs=experiment["epochs"],
         batch=experiment["batch_size"],
+        patience=experiment["patience"],
+        optimizer=experiment["optimizer"],
+        lr0=experiment["learning_rate"],
         seed=experiment["seed"],
         device=experiment["device"],
         workers=int(config.get("workers", 2)),

@@ -2,6 +2,11 @@ path: .
 train: dataset/splits/train/images
 val: dataset/splits/validation/images
 test: dataset/splits/test/images
+# The current materialized files are a part-class collapse from Roboflow v7,
+# not reviewed physical-fish instances. The segmentation preflight intentionally
+# blocks training until review replaces them and this becomes `whole_fish`.
+annotation_unit: unverified_part_collapse
+review_status: BLOCKED_PENDING_WHOLE_FISH_REVIEW
 nc: 4
 names:
   0: Class A

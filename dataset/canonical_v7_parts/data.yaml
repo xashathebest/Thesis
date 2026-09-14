@@ -1,0 +1,6 @@
+train: images/train
+val: images/val
+test: images/test
+nc: 12
+names: {0: "Grade_A_Body", 1: "Grade_A_Head", 2: "Grade_A_Tail", 3: "Grade_B_Body", 4: "Grade_B_Head", 5: "Grade_B_Tail", 6: "Grade_C_Body", 7: "Grade_C_Head", 8: "Grade_C_Tail", 9: "Rejected_Body", 10: "Rejected_Head", 11: "Rejected_Tail"}
+annotation_unit: fish_part

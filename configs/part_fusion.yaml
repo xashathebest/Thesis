@@ -1,0 +1,26 @@
+# Prototype defaults. These are configurable engineering starting points, not
+# scientifically validated grading thresholds.
+head_weight: 1.0
+body_weight: 1.0
+tail_weight: 1.0
+structural_rejection_weight: 1.0
+
+minimum_parts_for_verdict: 1
+minimum_total_evidence: 1.5
+minimum_track_observations: 2
+
+part_association_threshold: 0.45
+minimum_association_confidence: 0.45
+structural_rejection_threshold: 0.80
+temporal_evidence_limit: 120
+
+image_boundary_margin: 0.05
+occlusion_threshold: 0.30
+structural_recovery_decay: 0.25
+
+verdict_policy: weighted_vote
+
+# Select the operating point on validation data only. The first value remains
+# a provisional inference default until a trained model is evaluated.
+part_detection_confidence: 0.25
+threshold_candidates: [0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50]

@@ -1,0 +1,13 @@
+class_id,class,support,Precision,Recall,mAP50,mAP50_95
+0,Grade_A_Body,72,,,,
+1,Grade_A_Head,66,,,,
+2,Grade_A_Tail,66,,,,
+3,Grade_B_Body,157,,,,
+4,Grade_B_Head,155,,,,
+5,Grade_B_Tail,88,,,,
+6,Grade_C_Body,110,,,,
+7,Grade_C_Head,74,,,,
+8,Grade_C_Tail,39,,,,
+9,Rejected_Body,167,,,,
+10,Rejected_Head,161,,,,
+11,Rejected_Tail,82,,,,

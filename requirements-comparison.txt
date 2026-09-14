@@ -1,0 +1,6 @@
+-r requirements.txt
+effdet==0.4.1
+matplotlib
+nbformat
+nbclient
+ipykernel
