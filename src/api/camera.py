@@ -4,18 +4,41 @@ from __future__ import annotations
 
 from threading import Event, Lock, Thread
 from time import monotonic
+from typing import Any
 
 from src.api.domain import InspectionState
 from src.api.model import YoloModel
+from src.api.runtime import PART_PREVIEW_MODE, WHOLE_FISH_MODE
+from src.inference.part_fusion import PartDetection
+from src.inference.part_model import YoloPartModel
+
+
+PART_GRADE_COLORS = {
+    "Class A": (76, 175, 80),
+    "Class B": (255, 152, 0),
+    "Class C": (170, 90, 205),
+    "Rejected": (45, 45, 225),
+}
 
 
 class CameraInspectionService:
     """Own exactly one camera reader and one inference loop."""
 
-    def __init__(self, state: InspectionState, model: YoloModel, camera_index: int = 0) -> None:
+    def __init__(
+        self,
+        state: InspectionState,
+        model: YoloModel | YoloPartModel,
+        camera_index: int = 0,
+        runtime_mode: str = WHOLE_FISH_MODE,
+    ) -> None:
+        if runtime_mode not in {WHOLE_FISH_MODE, PART_PREVIEW_MODE}:
+            raise ValueError(f"Unsupported runtime mode: {runtime_mode}")
+        if state.runtime_mode != runtime_mode:
+            raise ValueError("Camera service and inspection state runtime modes must match.")
         self.state = state
         self.model = model
         self.camera_index = camera_index
+        self.runtime_mode = runtime_mode
         self._lifecycle_lock = Lock()
         self._processing_lock = Lock()
         self._stop_event = Event()
@@ -117,6 +140,67 @@ class CameraInspectionService:
             )
         return annotated
 
+    def _annotate_part_preview(self, frame: Any, detections: list[PartDetection], cv2: Any) -> Any:
+        """Draw raw part masks and boxes without fish IDs or inspection lines."""
+
+        import numpy as np
+
+        annotated = frame.copy()
+        height, width = annotated.shape[:2]
+        for detection in detections:
+            color = PART_GRADE_COLORS.get(detection.grade, (180, 180, 180))
+            left, top, right, bottom = (int(round(value)) for value in detection.bbox)
+            polygon = None
+            try:
+                if detection.mask and len(detection.mask) >= 3:
+                    points = np.asarray(detection.mask, dtype=np.float32)
+                    if points.shape == (len(detection.mask), 2) and np.isfinite(points).all():
+                        points[:, 0] = np.clip(points[:, 0], 0, max(0, width - 1))
+                        points[:, 1] = np.clip(points[:, 1], 0, max(0, height - 1))
+                        polygon = np.rint(points).astype(np.int32).reshape((-1, 1, 2))
+                        overlay = annotated.copy()
+                        cv2.fillPoly(overlay, [polygon], color)
+                        cv2.addWeighted(overlay, 0.22, annotated, 0.78, 0, annotated)
+                        cv2.polylines(annotated, [polygon], True, color, 2, cv2.LINE_AA)
+            except Exception:  # One malformed mask must fall back to its box without stopping the feed.
+                polygon = None
+            cv2.rectangle(annotated, (left, top), (right, bottom), color, 1 if polygon is not None else 2)
+            label = f"{detection.source_class_name} {detection.confidence * 100:.1f}%"
+            text_y = max(20, top - 7)
+            (text_width, text_height), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)
+            cv2.rectangle(
+                annotated,
+                (max(0, left), max(0, text_y - text_height - 7)),
+                (min(width - 1, max(0, left) + text_width + 7), min(height - 1, text_y + 3)),
+                color,
+                -1,
+            )
+            cv2.putText(
+                annotated,
+                label,
+                (max(0, left) + 3, text_y - 2),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.48,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
+        cv2.rectangle(annotated, (0, 0), (min(width - 1, 430), 48), (25, 32, 42), -1)
+        cv2.putText(annotated, "PART MODEL PREVIEW", (10, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(annotated, "Raw parts - fish counting disabled", (10, 39), cv2.FONT_HERSHEY_SIMPLEX, 0.43, (210, 220, 230), 1, cv2.LINE_AA)
+        return annotated
+
+    def process_frame(self, frame: Any, cv2: Any) -> Any:
+        """Run the active mode for one frame; exposed for webcam-free tests."""
+
+        if self.runtime_mode == PART_PREVIEW_MODE:
+            detections = self.model.predict(frame)
+            return self._annotate_part_preview(frame, detections, cv2)  # type: ignore[arg-type]
+        _, detections = self.model.predict(frame)
+        frame_size = (frame.shape[1], frame.shape[0])
+        self.state.process_detections(detections, frame_size)
+        return self._annotate(frame, detections, cv2)
+
     def _run(self) -> None:
         capture = None
         try:
@@ -129,7 +213,7 @@ class CameraInspectionService:
             self.state.mark_running()
             previous_time = monotonic()
             smoothed_fps = 0.0
-            consecutive_tracking_errors = 0
+            consecutive_processing_errors = 0
 
             while not self._stop_event.is_set():
                 ok, frame = capture.read()
@@ -138,18 +222,17 @@ class CameraInspectionService:
                     return
                 try:
                     with self._processing_lock:
-                        _, detections = self.model.predict(frame)
-                        frame_size = (frame.shape[1], frame.shape[0])
-                        self.state.process_detections(detections, frame_size)
-                    consecutive_tracking_errors = 0
+                        annotated = self.process_frame(frame, cv2)
+                    consecutive_processing_errors = 0
                 except Exception as exc:
-                    consecutive_tracking_errors += 1
-                    detections = []
-                    self.state.report_tracker_error(f"Tracking frame failed: {exc}")
-                    if consecutive_tracking_errors >= 5:
-                        self.state.mark_error("Tracking failed on five consecutive frames. Inspection stopped.")
+                    consecutive_processing_errors += 1
+                    if self.runtime_mode == WHOLE_FISH_MODE:
+                        self.state.report_tracker_error(f"Tracking frame failed: {exc}")
+                    if consecutive_processing_errors >= 5:
+                        activity = "Part-preview inference" if self.runtime_mode == PART_PREVIEW_MODE else "Tracking"
+                        self.state.mark_error(f"{activity} failed on five consecutive frames. Inspection stopped. Last error: {exc}")
                         return
-                annotated = self._annotate(frame, detections, cv2)
+                    annotated = frame
                 encoded, buffer = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 82])
                 if not encoded:
                     continue

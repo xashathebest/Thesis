@@ -14,6 +14,8 @@ from fastapi.staticfiles import StaticFiles
 from src.api.camera import CameraInspectionService
 from src.api.domain import InspectionState, TrackingConfig
 from src.api.model import YoloModel, resolve_weights_path
+from src.api.runtime import PART_PREVIEW_MODE, resolve_part_weights_path, resolve_runtime_mode
+from src.inference.part_model import YoloPartModel
 from src.preprocessing.dataset_utils import load_yaml_file, project_root
 
 
@@ -25,6 +27,8 @@ IMAGE_SIZE = int(YOLO_CONFIG.get("imgsz", 640))
 MODEL_FAMILY = Path(str(YOLO_CONFIG.get("model", "yolov8n.yaml"))).stem
 CAMERA_INDEX = int(os.getenv("LEMURU_CAMERA_INDEX", "0"))
 WEIGHTS_PATH = resolve_weights_path(REPO_ROOT, os.getenv("LEMURU_WEIGHTS"))
+RUNTIME_MODE = resolve_runtime_mode(os.getenv("LEMURU_MODE"))
+PART_WEIGHTS_PATH = resolve_part_weights_path(REPO_ROOT, os.getenv("LEMURU_PART_WEIGHTS"))
 TRACKING_CONFIG = TrackingConfig(
     tracker=os.getenv("LEMURU_TRACKER", "bytetrack.yaml"),
     line_orientation=os.getenv("LEMURU_LINE_ORIENTATION", "vertical").lower(),
@@ -34,22 +38,26 @@ TRACKING_CONFIG = TrackingConfig(
     history_limit=int(os.getenv("LEMURU_HISTORY_LIMIT", "25")),
 )
 
-state = InspectionState(TRACKING_CONFIG)
+state = InspectionState(TRACKING_CONFIG, runtime_mode=RUNTIME_MODE)
 state.confidence_threshold = CONFIDENCE
-model = YoloModel(
-    WEIGHTS_PATH,
-    confidence_threshold=CONFIDENCE,
-    imgsz=IMAGE_SIZE,
-    model_family=MODEL_FAMILY,
-    tracker=TRACKING_CONFIG.tracker,
-)
-service = CameraInspectionService(state, model, camera_index=CAMERA_INDEX)
+if RUNTIME_MODE == PART_PREVIEW_MODE:
+    model = YoloPartModel(PART_WEIGHTS_PATH, confidence=CONFIDENCE, imgsz=IMAGE_SIZE)
+else:
+    model = YoloModel(
+        WEIGHTS_PATH,
+        confidence_threshold=CONFIDENCE,
+        imgsz=IMAGE_SIZE,
+        model_family=MODEL_FAMILY,
+        tracker=TRACKING_CONFIG.tracker,
+    )
+service = CameraInspectionService(state, model, camera_index=CAMERA_INDEX, runtime_mode=RUNTIME_MODE)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     if model.load():
-        state.set_model("ready", model.name, str(model.weights_path), f"Model ready on {model.device}.")
+        mode_message = "Raw part preview ready; fish counting is disabled. " if RUNTIME_MODE == PART_PREVIEW_MODE else ""
+        state.set_model("ready", model.name, str(model.weights_path), f"{mode_message}Model ready on {model.device}.")
     else:
         state.set_model("unavailable", None, None, model.error or "Model is unavailable.")
     yield

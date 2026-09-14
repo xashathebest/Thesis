@@ -154,6 +154,50 @@ worker and release the camera. Closing the backend also releases it through the
 application shutdown hook. Interactive API documentation is available at
 `http://127.0.0.1:8000/docs`.
 
+### Temporary YOLO26 Part Preview
+
+This temporary mode displays raw predictions from the 12-class YOLO26n-seg part
+model. It uses the existing webcam and dashboard, but whole-fish ByteTrack identity,
+grading, inspection-line events, history, and counting are intentionally disabled.
+Head, Body, and Tail predictions are never counted as fish.
+
+Place `exp-4.pt` at `models/yolov26/exp-4.pt`, or point
+`LEMURU_PART_WEIGHTS` to its repository-relative location. In PowerShell:
+
+```powershell
+$env:LEMURU_MODE="part_preview"
+$env:LEMURU_PART_WEIGHTS="models\yolov26\exp-4.pt"
+$env:LEMURU_CONFIDENCE="0.25"
+py -m src.api
+```
+
+For the alternate run layout shown by Ultralytics exports, use:
+
+```powershell
+$env:LEMURU_PART_WEIGHTS="models\yolo_parts\yolo26n_seg_exp4\weights\exp-4.pt"
+```
+
+Open `http://127.0.0.1:8000` and click **Start Inspection**. The feed draws the
+part class name and confidence, a translucent segmentation polygon and outline when
+valid mask geometry is available, and a bounding box fallback otherwise. The model
+is accepted only when checkpoint class IDs 0–11 exactly match the repository's
+verified `SOURCE_CLASSES` mapping.
+
+Return to the normal whole-fish dashboard with:
+
+```powershell
+Remove-Item Env:LEMURU_MODE -ErrorAction SilentlyContinue
+Remove-Item Env:LEMURU_PART_WEIGHTS -ErrorAction SilentlyContinue
+py -m src.api
+```
+
+or explicitly select normal mode before launching:
+
+```powershell
+$env:LEMURU_MODE="whole_fish"
+py -m src.api
+```
+
 The API endpoints are:
 
 | Method | Route | Purpose |

@@ -7,6 +7,8 @@ const elements = {
   empty: $("result-empty"), active: $("result-active"), resultPanel: $("result-panel"), resultFish: $("result-fish"),
   decision: $("decision"), resultLabel: $("result-label"), confidence: $("confidence"), confidenceBar: $("confidence-bar"),
   trackChips: $("track-chips"), historyEmpty: $("history-empty"), historyWrap: $("history-table-wrap"), historyBody: $("history-body"),
+  previewBanner: $("preview-banner"), countersPanel: $("counters-panel"), historyPanel: $("history-panel"),
+  resultEmptyTitle: $("result-empty-title"), resultEmptyCopy: $("result-empty-copy"),
 };
 
 let streamAttached = false;
@@ -94,10 +96,19 @@ function renderHistory(history) {
 
 function render(data) {
   const inspection = data.inspection_status;
+  const partPreview = data.runtime_mode === "part_preview";
+  elements.previewBanner.classList.toggle("hidden", !partPreview);
+  elements.countersPanel.classList.toggle("preview-disabled", partPreview);
+  elements.historyPanel.classList.toggle("preview-disabled", partPreview);
+  elements.resultPanel.classList.toggle("preview-disabled", partPreview);
+  $("active-fish-card").classList.toggle("preview-disabled", partPreview);
+  $("total-events-card").classList.toggle("preview-disabled", partPreview);
+  $("workspace-title").textContent = partPreview ? "Live part-model preview" : "Live quality inspection";
+  $("feed-title").textContent = partPreview ? "Live raw part predictions" : "Live tracked feed";
   setPill(elements.systemPill, `System ${titleCase(data.system_status)}`, data.system_status);
   setPill(elements.cameraPill, `Camera ${titleCase(data.camera_status)}`, data.camera_status);
   setPill(elements.modelPill, `Model ${titleCase(data.model_status)}`, data.model_status);
-  setPill(elements.trackerPill, `Tracker ${titleCase(data.tracker_status)}`, data.tracker_status);
+  setPill(elements.trackerPill, partPreview ? "Fish tracker disabled" : `Tracker ${titleCase(data.tracker_status)}`, data.tracker_status);
 
   elements.inspectionState.className = `inspection-state ${stateClass(inspection)}`;
   elements.inspectionState.replaceChildren(document.createElement("i"), document.createTextNode(titleCase(inspection)));
@@ -116,8 +127,10 @@ function render(data) {
   }
   elements.placeholder.classList.toggle("hidden", inspection === "running" && streamReady);
   if (inspection === "starting") {
-    elements.placeholderTitle.textContent = "Opening camera and tracker";
-    elements.placeholderCopy.textContent = "The local ByteTrack inspection worker is starting.";
+    elements.placeholderTitle.textContent = partPreview ? "Opening camera and part model" : "Opening camera and tracker";
+    elements.placeholderCopy.textContent = partPreview
+      ? "The local raw part-segmentation preview is starting."
+      : "The local ByteTrack inspection worker is starting.";
   } else if (inspection === "errored") {
     elements.placeholderTitle.textContent = "Inspection unavailable";
     elements.placeholderCopy.textContent = data.message;
@@ -130,10 +143,19 @@ function render(data) {
   elements.alert.classList.toggle("hidden", !showAlert);
   elements.alert.textContent = data.message;
 
-  const event = data.latest_event;
+  const event = partPreview ? null : data.latest_event;
   elements.empty.classList.toggle("hidden", Boolean(event));
   elements.active.classList.toggle("hidden", !event);
   elements.resultPanel.classList.toggle("is-rejected", event?.decision === "REJECTED");
+  $("result-eyebrow").textContent = partPreview ? "Preview mode" : "Latest completed inspection";
+  $("result-title").textContent = partPreview ? "Whole-fish result unavailable" : "Current classification event";
+  elements.resultEmptyTitle.textContent = partPreview ? "Unavailable in Part Preview" : "No completed inspection";
+  elements.resultEmptyCopy.textContent = partPreview
+    ? "Raw part predictions are never converted into fish grades or inspection events."
+    : "A result will appear after a tracked fish crosses the inspection line.";
+  $("classification-policy").textContent = partPreview
+    ? "Head, Body, and Tail labels are preview evidence only."
+    : 'Class A-C are accepted. "Rejected" is rejected.';
   if (event) {
     elements.decision.textContent = event.decision;
     elements.decision.className = `decision ${event.decision === "REJECTED" ? "rejected" : ""}`;
@@ -149,19 +171,36 @@ function render(data) {
   $("camera-metric").textContent = titleCase(data.camera_status);
   $("model-metric").textContent = titleCase(data.model_status);
   $("model-name").textContent = data.active_model || "No model loaded";
-  $("active-fish-count").textContent = data.active_fish_count;
-  $("active-fish-inline").textContent = data.active_fish_count;
-  $("tracker-summary").textContent = `${titleCase(data.tracking_config.tracker.replace(".yaml", ""))} ${titleCase(data.tracker_status)}`;
+  $("active-fish-count").textContent = partPreview ? "N/A" : data.active_fish_count;
+  $("active-fish-inline").textContent = partPreview ? "N/A" : data.active_fish_count;
+  $("tracker-summary").textContent = partPreview
+    ? "Disabled in Part Preview"
+    : `${titleCase(data.tracking_config.tracker.replace(".yaml", ""))} ${titleCase(data.tracker_status)}`;
   $("threshold").textContent = `${Math.round(data.confidence_threshold * 100)}%`;
-  $("total-count").textContent = data.counters.total;
-  $("class-a-count").textContent = data.counters["Class A"];
-  $("class-b-count").textContent = data.counters["Class B"];
-  $("class-c-count").textContent = data.counters["Class C"];
-  $("rejected-count").textContent = data.counters.Rejected;
-  $("history-limit").textContent = `Newest ${data.tracking_config.history_limit} events`;
-  $("line-description").textContent = `${titleCase(data.tracking_config.conveyor_direction)} - ${Math.round(data.tracking_config.line_position * 100)}% line`;
-  renderTracks(data.active_tracks);
-  renderHistory(data.recent_history);
+  $("total-count").textContent = partPreview ? "N/A" : data.counters.total;
+  $("class-a-count").textContent = partPreview ? "—" : data.counters["Class A"];
+  $("class-b-count").textContent = partPreview ? "—" : data.counters["Class B"];
+  $("class-c-count").textContent = partPreview ? "—" : data.counters["Class C"];
+  $("rejected-count").textContent = partPreview ? "—" : data.counters.Rejected;
+  $("history-limit").textContent = partPreview ? "Disabled" : `Newest ${data.tracking_config.history_limit} events`;
+  $("line-description").textContent = partPreview
+    ? "Raw 12-class part segmentation - no tracking"
+    : `${titleCase(data.tracking_config.conveyor_direction)} - ${Math.round(data.tracking_config.line_position * 100)}% line`;
+  if (partPreview) {
+    elements.trackChips.replaceChildren();
+    const notice = document.createElement("span");
+    notice.className = "track-empty";
+    notice.textContent = "No fish IDs in Part Preview";
+    elements.trackChips.append(notice);
+    elements.historyEmpty.classList.remove("hidden");
+    elements.historyEmpty.textContent = "Unavailable in Part Preview — no inspection events are created.";
+    elements.historyWrap.classList.add("hidden");
+    elements.historyBody.replaceChildren();
+  } else {
+    elements.historyEmpty.textContent = "No fish have crossed the inspection line in this session.";
+    renderTracks(data.active_tracks);
+    renderHistory(data.recent_history);
+  }
 }
 
 function renderBackendUnavailable() {

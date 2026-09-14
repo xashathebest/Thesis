@@ -9,6 +9,8 @@ from threading import RLock
 from time import monotonic
 from typing import Iterable
 
+from src.api.runtime import PART_PREVIEW_MODE, WHOLE_FISH_MODE
+
 
 CLASS_NAMES = ("Class A", "Class B", "Class C", "Rejected")
 VALID_DIRECTIONS = ("left_to_right", "right_to_left", "top_to_bottom", "bottom_to_top")
@@ -302,12 +304,20 @@ class TrackingManager:
 class InspectionState:
     """Synchronize API metadata shared by the camera and request threads."""
 
-    def __init__(self, tracking_config: TrackingConfig | None = None) -> None:
+    def __init__(
+        self,
+        tracking_config: TrackingConfig | None = None,
+        runtime_mode: str = WHOLE_FISH_MODE,
+    ) -> None:
         self._lock = RLock()
+        if runtime_mode not in {WHOLE_FISH_MODE, PART_PREVIEW_MODE}:
+            raise ValueError(f"Unsupported runtime mode: {runtime_mode}")
+        self.runtime_mode = runtime_mode
+        self.model_task = "part_segmentation" if runtime_mode == PART_PREVIEW_MODE else "whole_fish_detection"
         self.inspection_status = "stopped"
         self.camera_status = "disconnected"
         self.model_status = "checking"
-        self.tracker_status = "checking"
+        self.tracker_status = "disabled" if runtime_mode == PART_PREVIEW_MODE else "checking"
         self.message = "Inspection is stopped."
         self.fps = 0.0
         self.model_name: str | None = None
@@ -331,8 +341,12 @@ class InspectionState:
                 return False
             self.inspection_status = "starting"
             self.camera_status = "connecting"
-            self.tracker_status = "starting"
-            self.message = "Opening the camera and tracker..."
+            self.tracker_status = "disabled" if self.runtime_mode == PART_PREVIEW_MODE else "starting"
+            self.message = (
+                "Opening the camera for raw part-model preview. Fish counting is disabled."
+                if self.runtime_mode == PART_PREVIEW_MODE
+                else "Opening the camera and tracker..."
+            )
             self.fps = 0.0
             self.detections = []
             self.tracking.reset_session()
@@ -342,14 +356,18 @@ class InspectionState:
         with self._lock:
             self.inspection_status = "running"
             self.camera_status = "connected"
-            self.tracker_status = "ready"
-            self.message = "Inspection is running."
+            self.tracker_status = "disabled" if self.runtime_mode == PART_PREVIEW_MODE else "ready"
+            self.message = (
+                "Part-model preview is running. Whole-fish tracking, grading, and counting are disabled."
+                if self.runtime_mode == PART_PREVIEW_MODE
+                else "Inspection is running."
+            )
 
     def mark_stopped(self, message: str = "Inspection is stopped.") -> None:
         with self._lock:
             self.inspection_status = "stopped"
             self.camera_status = "disconnected"
-            self.tracker_status = "stopped"
+            self.tracker_status = "disabled" if self.runtime_mode == PART_PREVIEW_MODE else "stopped"
             self.message = message
             self.fps = 0.0
             self.detections = []
@@ -358,7 +376,7 @@ class InspectionState:
         with self._lock:
             self.inspection_status = "errored"
             self.camera_status = "error"
-            self.tracker_status = "error"
+            self.tracker_status = "disabled" if self.runtime_mode == PART_PREVIEW_MODE else "error"
             self.message = message
             self.fps = 0.0
             self.detections = []
@@ -375,6 +393,8 @@ class InspectionState:
         timestamp: float | None = None,
     ) -> list[InspectionEvent]:
         with self._lock:
+            if self.runtime_mode != WHOLE_FISH_MODE:
+                raise RuntimeError("Whole-fish detection processing is disabled in part-preview mode.")
             self.detections = list(detections)
             events = self.tracking.update(detections, frame_size, timestamp=timestamp)
             self.tracker_status = "ready"
@@ -394,7 +414,11 @@ class InspectionState:
         with self._lock:
             self.tracking.reset_session()
             self.detections = []
-            self.message = "Session statistics and active tracks were reset."
+            self.message = (
+                "Part preview reset. Fish counting remains disabled."
+                if self.runtime_mode == PART_PREVIEW_MODE
+                else "Session statistics and active tracks were reset."
+            )
 
     def frame(self) -> tuple[bytes | None, int]:
         with self._lock:
@@ -411,6 +435,8 @@ class InspectionState:
                 system_status = "attention"
             active_tracks = self.tracking.active_tracks()
             return {
+                "runtime_mode": self.runtime_mode,
+                "model_task": self.model_task,
                 "system_status": system_status,
                 "inspection_status": self.inspection_status,
                 "camera_status": self.camera_status,

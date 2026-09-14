@@ -26,7 +26,7 @@
       <section class="toolbar" aria-label="Inspection controls">
         <div>
           <p class="eyebrow">Operator dashboard</p>
-          <h2>Live quality inspection</h2>
+          <h2 id="workspace-title">Live quality inspection</h2>
         </div>
         <div class="controls">
           <span class="inspection-state neutral" id="inspection-state"><i></i>Stopped</span>
@@ -38,17 +38,22 @@
 
       <div class="alert hidden" id="alert" role="status"></div>
 
+      <section class="preview-banner hidden" id="preview-banner" role="status">
+        <strong>PART MODEL PREVIEW</strong>
+        <span>Raw Head / Body / Tail predictions. Whole-fish grading and counting are disabled.</span>
+      </section>
+
       <section class="main-grid">
         <article class="panel camera-panel">
           <div class="panel-heading">
             <div>
               <p class="eyebrow">Camera 01</p>
-              <h3>Live tracked feed</h3>
+              <h3 id="feed-title">Live tracked feed</h3>
             </div>
             <span class="live-badge neutral" id="live-badge">OFFLINE</span>
           </div>
           <div class="video-stage">
-            <img id="video-feed" alt="Tracked and annotated webcam inspection feed" />
+            <img id="video-feed" alt="Annotated local webcam feed" />
             <div class="video-placeholder" id="video-placeholder">
               <div class="camera-glyph" aria-hidden="true"></div>
               <strong id="placeholder-title">Inspection stopped</strong>
@@ -59,8 +64,8 @@
               <span id="feed-fps">0.0 FPS</span>
             </div>
           </div>
-          <div class="active-track-strip">
-            <strong>Active fish: <span id="active-fish-inline">0</span></strong>
+          <div class="active-track-strip" id="active-track-strip">
+            <strong id="active-track-label">Active fish: <span id="active-fish-inline">0</span></strong>
             <div class="track-chips" id="track-chips"><span class="track-empty">Waiting for tracked fish</span></div>
           </div>
         </article>
@@ -68,14 +73,14 @@
         <aside class="panel result-panel" id="result-panel">
           <div class="panel-heading">
             <div>
-              <p class="eyebrow">Latest completed inspection</p>
-              <h3>Current classification event</h3>
+              <p class="eyebrow" id="result-eyebrow">Latest completed inspection</p>
+              <h3 id="result-title">Current classification event</h3>
             </div>
           </div>
           <div class="result-empty" id="result-empty">
             <span class="result-icon">-</span>
-            <strong>No completed inspection</strong>
-            <p>A result will appear after a tracked fish crosses the inspection line.</p>
+            <strong id="result-empty-title">No completed inspection</strong>
+            <p id="result-empty-copy">A result will appear after a tracked fish crosses the inspection line.</p>
           </div>
           <div class="result-active hidden" id="result-active">
             <span class="decision neutral" id="decision">ACCEPTED</span>
@@ -87,7 +92,7 @@
           </div>
           <div class="result-note">
             <span>Classification policy</span>
-            <p>Class A-C are accepted. "Rejected" is rejected.</p>
+            <p id="classification-policy">Class A-C are accepted. "Rejected" is rejected.</p>
           </div>
         </aside>
       </section>
@@ -95,12 +100,12 @@
       <section class="metrics-grid" aria-label="Runtime information">
         <article class="metric-card"><span>Camera</span><strong id="camera-metric">Disconnected</strong><small>Local device</small></article>
         <article class="metric-card"><span>Model</span><strong id="model-metric">Checking</strong><small id="model-name">No model loaded</small></article>
-        <article class="metric-card"><span>Active fish</span><strong id="active-fish-count">0</strong><small id="tracker-summary">ByteTrack checking</small></article>
+        <article class="metric-card" id="active-fish-card"><span id="active-fish-label">Active fish</span><strong id="active-fish-count">0</strong><small id="tracker-summary">ByteTrack checking</small></article>
         <article class="metric-card"><span>Processing rate</span><strong id="fps-metric">0.0 FPS</strong><small>Current inference stream</small></article>
-        <article class="metric-card total-card"><span>Completed events</span><strong id="total-count">0</strong><small>Current inspection session</small></article>
+        <article class="metric-card total-card" id="total-events-card"><span>Completed events</span><strong id="total-count">0</strong><small>Current inspection session</small></article>
       </section>
 
-      <section class="panel counters-panel">
+      <section class="panel counters-panel" id="counters-panel">
         <div class="panel-heading">
           <div>
             <p class="eyebrow">Event-based session totals</p>
@@ -116,7 +121,7 @@
         </div>
       </section>
 
-      <section class="panel history-panel">
+      <section class="panel history-panel" id="history-panel">
         <div class="panel-heading">
           <div>
             <p class="eyebrow">Completed events</p>
