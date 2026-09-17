@@ -1,0 +1,7 @@
+# Runtime inspection data and local trained weights are not source files.
+outputs/*
+!outputs/.gitkeep
+weights/*
+!weights/.gitkeep
+data/*
+!data/.gitkeep

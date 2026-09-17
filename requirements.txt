@@ -8,4 +8,6 @@ joblib
 fastapi
 uvicorn[standard]
 opencv-python
+openpyxl
 PyYAML
+rfdetr[plus]>=1.10.1

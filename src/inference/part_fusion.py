@@ -761,6 +761,15 @@ class TemporalEvidenceManager:
     def reset(self) -> None:
         self._tracks.clear()
 
+    def discard_except(self, active_track_ids: set[int]) -> None:
+        """Drop temporal evidence for fish no longer active in the camera tracker."""
+
+        self._tracks = {
+            track_id: track
+            for track_id, track in self._tracks.items()
+            if track_id in active_track_ids
+        }
+
     def observe(self, fish_id: int, result: FishQualityResult) -> FishQualityResult:
         track = self._tracks.get(fish_id)
         if track is None:

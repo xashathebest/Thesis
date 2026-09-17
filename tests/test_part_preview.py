@@ -41,7 +41,7 @@ class _WholeFishModel(_PartModel):
         super().__init__(detections)
 
     def predict(self, frame):
-        return frame, self.detections
+        return self.detections
 
 
 class RuntimeModeTests(unittest.TestCase):
@@ -80,23 +80,21 @@ class PartModelValidationTests(unittest.TestCase):
             path.touch()
             names = dict(SOURCE_CLASSES)
             names[11] = "Unknown_Tail"
-            with patch("ultralytics.YOLO", return_value=SimpleNamespace(names=names, task="segment")):
-                model = YoloPartModel(path)
-                self.assertFalse(model.load())
-                self.assertIsNone(model.model)
-                self.assertIn("does not exactly match", model.error or "")
+            model = YoloPartModel(path, model_factory=lambda _path: SimpleNamespace(names=names, task="segment"))
+            self.assertFalse(model.load())
+            self.assertIsNone(model.model)
+            self.assertIn("does not exactly match", model.error or "")
 
     def test_checkpoint_load_rejects_detection_only_task(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "detector.pt"
             path.touch()
-            with patch(
-                "ultralytics.YOLO",
-                return_value=SimpleNamespace(names=dict(SOURCE_CLASSES), task="detect"),
-            ):
-                model = YoloPartModel(path)
-                self.assertFalse(model.load())
-                self.assertIn("segmentation checkpoint", model.error or "")
+            model = YoloPartModel(
+                path,
+                model_factory=lambda _path: SimpleNamespace(names=dict(SOURCE_CLASSES), task="detect"),
+            )
+            self.assertFalse(model.load())
+            self.assertIn("segmentation checkpoint", model.error or "")
 
     def test_missing_part_weights_report_clear_error(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -125,7 +123,7 @@ class PreviewPipelineTests(unittest.TestCase):
         snapshot = state.snapshot()
         self.assertEqual(
             snapshot["counters"],
-            {"Class A": 0, "Class B": 0, "Class C": 0, "Rejected": 0, "total": 0},
+            {"Fish": 0, "total": 0},
         )
         self.assertEqual(snapshot["recent_history"], [])
         self.assertEqual(snapshot["active_fish_count"], 0)
@@ -151,8 +149,8 @@ class PreviewPipelineTests(unittest.TestCase):
 
     def test_normal_whole_fish_processing_still_creates_one_event(self):
         state = InspectionState(runtime_mode=WHOLE_FISH_MODE)
-        left = Detection(0, "Class A", 0.9, (20, 30, 40, 60), 7)
-        right = Detection(0, "Class A", 0.9, (120, 30, 140, 60), 7)
+        left = Detection(0, "Fish", 0.9, (20, 30, 40, 60), 7)
+        right = Detection(0, "Fish", 0.9, (120, 30, 140, 60), 7)
         model = _WholeFishModel([left])
         service = CameraInspectionService(state, model, runtime_mode=WHOLE_FISH_MODE)
         service.process_frame(self.frame, cv2)

@@ -1,0 +1,16 @@
+path: /content/tamban_complete_v2_work/prepared
+train: train/images
+nc: 12
+names:
+- Grade_A_Body
+- Grade_A_Head
+- Grade_A_Tail
+- Grade_B_Body
+- Grade_B_Head
+- Grade_B_Tail
+- Grade_C_Body
+- Grade_C_Head
+- Grade_C_Tail
+- Rejected_Body
+- Rejected_Head
+- Rejected_Tail

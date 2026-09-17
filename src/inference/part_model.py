@@ -4,10 +4,22 @@ from __future__ import annotations
 
 from pathlib import Path
 from threading import RLock
-from typing import Any
+from typing import Any, Callable
 
 from src.inference.part_fusion import PartDetection
 from src.preprocessing.audit_v7_exports import SOURCE_CLASSES
+
+
+def validate_part_class_mapping(class_names: dict[int, str] | list[str]) -> None:
+    """Validate the retained legacy preview model's audited v7 class order."""
+
+    actual = (
+        {index: str(class_names[index]) for index in range(len(class_names))}
+        if isinstance(class_names, list)
+        else {int(index): str(name) for index, name in class_names.items()}
+    )
+    if actual != SOURCE_CLASSES:
+        raise ValueError("Part-model class mapping does not exactly match the audited v7 source classes.")
 
 
 def part_detections_from_result(result: Any) -> list[PartDetection]:
@@ -49,13 +61,21 @@ def part_detections_from_result(result: Any) -> list[PartDetection]:
 class YoloPartModel:
     """Run the part model without assigning part-level tracker identities."""
 
-    def __init__(self, weights_path: Path, confidence: float = 0.25, imgsz: int = 640) -> None:
+    def __init__(
+        self,
+        weights_path: Path,
+        confidence: float = 0.25,
+        imgsz: int = 640,
+        *,
+        model_factory: Callable[[str], Any] | None = None,
+    ) -> None:
         self.weights_path = weights_path
         self.confidence = confidence
         self.imgsz = imgsz
         self.model: Any | None = None
         self.device: str | int = "cpu"
         self.error: str | None = None
+        self._model_factory = model_factory
         self._lock = RLock()
 
     def load(self) -> bool:
@@ -66,10 +86,17 @@ class YoloPartModel:
             return False
         try:
             import torch
-            from ultralytics import YOLO
+            factory = self._model_factory
+            if factory is None:
+                from ultralytics import YOLO
+
+                factory = YOLO
 
             self.device = 0 if torch.cuda.is_available() else "cpu"
-            self.model = YOLO(str(self.weights_path))
+            self.model = factory(str(self.weights_path))
+            if getattr(self.model, "task", None) != "segment":
+                raise ValueError("Part-model weights must be a segmentation checkpoint.")
+            validate_part_class_mapping(getattr(self.model, "names", {}))
             self.error = None
             return True
         except Exception as error:

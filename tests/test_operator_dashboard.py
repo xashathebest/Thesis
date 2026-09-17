@@ -7,19 +7,17 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.api.camera import CameraInspectionService
-from src.api.domain import Detection, InspectionState, TrackingConfig, TrackingManager
+from src.api.domain import Detection, InspectionState, QualitySummary, TrackingConfig, TrackingManager
 from src.api.model import resolve_weights_path
 
 
 def detection(
     track_id: int,
-    class_name: str = "Class A",
     confidence: float = 0.9,
     center_x: float = 25,
     center_y: float = 50,
 ) -> Detection:
-    class_id = {"Class A": 0, "Class B": 1, "Class C": 2, "Rejected": 3}[class_name]
-    return Detection(class_id, class_name, confidence, (center_x - 10, center_y - 10, center_x + 10, center_y + 10), track_id)
+    return Detection(0, "Fish", confidence, (center_x - 10, center_y - 10, center_x + 10, center_y + 10), track_id)
 
 
 def manager(**overrides: object) -> TrackingManager:
@@ -57,10 +55,10 @@ class WeightResolutionTests(unittest.TestCase):
 class TrackingManagerTests(unittest.TestCase):
     frame_size = (100, 100)
 
-    def test_identity_remains_stable_through_class_changes(self) -> None:
+    def test_identity_remains_stable_across_fish_detections(self) -> None:
         tracking = manager()
-        tracking.update([detection(12, "Class A", 0.6, 10)], self.frame_size, timestamp=0.0)
-        tracking.update([detection(12, "Class B", 0.7, 20)], self.frame_size, timestamp=0.1)
+        tracking.update([detection(12, 0.6, 10)], self.frame_size, timestamp=0.0)
+        tracking.update([detection(12, 0.7, 20)], self.frame_size, timestamp=0.1)
         tracks = tracking.active_tracks()
         self.assertEqual(len(tracks), 1)
         self.assertEqual(tracks[0]["track_id"], 12)
@@ -84,9 +82,9 @@ class TrackingManagerTests(unittest.TestCase):
 
     def test_two_fish_crossing_produce_two_events(self) -> None:
         tracking = manager(line_position=0.5)
-        tracking.update([detection(41, center_x=30), detection(42, "Class C", center_x=40)], self.frame_size, timestamp=0.0)
+        tracking.update([detection(41, center_x=30), detection(42, center_x=40)], self.frame_size, timestamp=0.0)
         events = tracking.update(
-            [detection(41, center_x=60), detection(42, "Class C", center_x=70)], self.frame_size, timestamp=0.1
+            [detection(41, center_x=60), detection(42, center_x=70)], self.frame_size, timestamp=0.1
         )
         self.assertEqual({event.track_id for event in events}, {41, 42})
         self.assertEqual(tracking.counters()["total"], 2)
@@ -104,21 +102,21 @@ class TrackingManagerTests(unittest.TestCase):
         self.assertEqual(tracking.update([detection(4, center_x=40)], self.frame_size, timestamp=0.1), [])
         self.assertEqual(tracking.counters()["total"], 0)
 
-    def test_temporal_classification_uses_confidence_weighted_vote(self) -> None:
+    def test_temporal_detection_uses_mean_fish_confidence(self) -> None:
         tracking = manager(line_position=0.5)
         observations = [
-            detection(17, "Class A", 0.61, 10),
-            detection(17, "Class A", 0.78, 20),
-            detection(17, "Class B", 0.55, 30),
-            detection(17, "Class A", 0.89, 40),
-            detection(17, "Class A", 0.92, 60),
+            detection(17, 0.61, 10),
+            detection(17, 0.78, 20),
+            detection(17, 0.55, 30),
+            detection(17, 0.89, 40),
+            detection(17, 0.92, 60),
         ]
         events = []
         for index, item in enumerate(observations):
             events.extend(tracking.update([item], self.frame_size, timestamp=index / 10))
         self.assertEqual(len(events), 1)
-        self.assertEqual(events[0].final_class, "Class A")
-        self.assertAlmostEqual(events[0].final_confidence, 0.8)
+        self.assertEqual(events[0].final_class, "Fish")
+        self.assertAlmostEqual(events[0].final_confidence, 0.75)
 
     def test_recent_history_is_newest_first(self) -> None:
         tracking = manager(line_position=0.5)
@@ -148,8 +146,8 @@ class TrackingManagerTests(unittest.TestCase):
 
     def test_counters_reflect_completed_events_only(self) -> None:
         tracking = manager(line_position=0.5)
-        tracking.update([detection(1, "Class A", center_x=20), detection(2, "Rejected", center_x=30)], self.frame_size, timestamp=0.0)
-        self.assertEqual(tracking.counters(), {"Class A": 0, "Class B": 0, "Class C": 0, "Rejected": 0, "total": 0})
+        tracking.update([detection(1, center_x=20), detection(2, center_x=30)], self.frame_size, timestamp=0.0)
+        self.assertEqual(tracking.counters(), {"Fish": 0, "total": 0})
 
     def test_already_counted_track_cannot_count_again(self) -> None:
         tracking = manager(line_position=0.5)
@@ -162,12 +160,40 @@ class TrackingManagerTests(unittest.TestCase):
         tracking.update([detection(5, center_x=50, center_y=40)], self.frame_size, timestamp=0.0)
         self.assertEqual(len(tracking.update([detection(5, center_x=50, center_y=60)], self.frame_size, timestamp=0.1)), 1)
 
+    def test_late_quality_corrections_keep_total_and_quality_invariant(self) -> None:
+        for quality in ("Class A", "Class B", "Class C", "Rejected"):
+            with self.subTest(quality=quality):
+                tracking = manager(line_position=0.5)
+                tracking.update([detection(31, center_x=40)], self.frame_size, timestamp=0.0)
+                tracking.update([detection(31, center_x=60)], self.frame_size, timestamp=0.1)
+                self.assertEqual(tracking.counters()["total"], 1)
+                self.assertEqual(tracking.quality_counters()["Ungraded"], 1)
+
+                grade = QualitySummary(31, quality, 0.9)
+                tracking.update([detection(31, center_x=70)], self.frame_size, timestamp=0.2, grades={31: grade})
+                first = tracking.quality_counters()
+                self.assertEqual(first[quality], 1)
+                self.assertEqual(first["Ungraded"], 0)
+                self.assertEqual(sum(first.values()), tracking.counters()["total"])
+
+                tracking.update([detection(31, center_x=80)], self.frame_size, timestamp=0.3, grades={31: grade})
+                self.assertEqual(tracking.quality_counters(), first)
+                self.assertEqual(tracking.counters()["total"], 1)
+
+    def test_unknown_quality_is_counted_as_ungraded_to_preserve_invariant(self) -> None:
+        tracking = manager(line_position=0.5)
+        grade = QualitySummary(32, "Unexpected", 0.8)
+        tracking.update([detection(32, center_x=40)], self.frame_size, timestamp=0.0, grades={32: grade})
+        tracking.update([detection(32, center_x=60)], self.frame_size, timestamp=0.1)
+        self.assertEqual(tracking.quality_counters()["Ungraded"], 1)
+        self.assertEqual(sum(tracking.quality_counters().values()), tracking.counters()["total"])
+
 
 class StateTests(unittest.TestCase):
     def test_detection_serialization_includes_track_id(self) -> None:
-        payload = detection(27, "Rejected", 0.918).to_dict()
+        payload = detection(27, 0.918).to_dict()
         self.assertEqual(payload["track_id"], 27)
-        self.assertEqual(payload["decision"], "REJECTED")
+        self.assertEqual(payload["decision"], "DETECTED")
         self.assertEqual(payload["confidence_percent"], 91.8)
 
     def test_repeated_begin_start_is_idempotent(self) -> None:
@@ -224,6 +250,35 @@ class CameraLifecycleTests(unittest.TestCase):
         service.reset_session()
         self.assertEqual(fake_model.reset_count, 1)
         self.assertEqual(state.snapshot()["counters"]["total"], 0)
+
+    @patch("src.api.camera.Thread", _FakeThread)
+    def test_stop_restart_preserves_totals_but_reset_count_clears_them(self) -> None:
+        state = InspectionState(TrackingConfig(line_position=0.5))
+        fake_model = _FakeModel()
+        service = CameraInspectionService(state, fake_model)  # type: ignore[arg-type]
+        self.assertTrue(service.start())
+        state.process_detections([detection(51, center_x=40)], (100, 100), timestamp=0.0)
+        state.process_detections([detection(51, center_x=60)], (100, 100), timestamp=0.1)
+        before_stop = state.snapshot()
+        self.assertEqual(before_stop["counters"]["total"], 1)
+        self.assertEqual(before_stop["quality_counters"]["Ungraded"], 1)
+
+        self.assertTrue(service.stop())
+        stopped = state.snapshot()
+        self.assertEqual(stopped["inspection_status"], "stopped")
+        self.assertEqual(stopped["counters"], before_stop["counters"])
+        self.assertEqual(stopped["quality_counters"], before_stop["quality_counters"])
+        self.assertEqual(stopped["active_tracks"], [])
+
+        self.assertTrue(service.start())
+        restarted = state.snapshot()
+        self.assertEqual(restarted["counters"], before_stop["counters"])
+        self.assertEqual(restarted["quality_counters"], before_stop["quality_counters"])
+
+        service.reset_session()
+        reset = state.snapshot()
+        self.assertEqual(reset["counters"]["total"], 0)
+        self.assertTrue(all(value == 0 for value in reset["quality_counters"].values()))
 
 
 if __name__ == "__main__":

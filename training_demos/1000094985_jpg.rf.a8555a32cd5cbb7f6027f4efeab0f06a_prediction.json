@@ -1,0 +1,283 @@
+{
+  "parts": [
+    {
+      "detection": 0,
+      "part": "Body",
+      "yolo_grade": "B",
+      "yolo_score_uncalibrated": 0.9527255892753601,
+      "box_original_pixels": [
+        32,
+        153,
+        132,
+        285
+      ],
+      "feature_grade": "B",
+      "feature_score_uncalibrated": 0.6493224547557784,
+      "status": "AGREEMENT_ONLY: provisional body grade",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    },
+    {
+      "detection": 1,
+      "part": "Body",
+      "yolo_grade": "B",
+      "yolo_score_uncalibrated": 0.9131843447685242,
+      "box_original_pixels": [
+        443,
+        217,
+        545,
+        360
+      ],
+      "feature_grade": "A",
+      "feature_score_uncalibrated": 0.695913374663418,
+      "status": "REVIEW: methods disagree or score is low; PART_TOUCHES_FRAME",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    },
+    {
+      "detection": 2,
+      "part": "Body",
+      "yolo_grade": "B",
+      "yolo_score_uncalibrated": 0.9108283519744873,
+      "box_original_pixels": [
+        401,
+        0,
+        505,
+        78
+      ],
+      "feature_grade": "C",
+      "feature_score_uncalibrated": 0.5002811083016572,
+      "status": "REVIEW: methods disagree or score is low; PART_TOUCHES_FRAME",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    },
+    {
+      "detection": 3,
+      "part": "Head",
+      "yolo_grade": "B",
+      "yolo_score_uncalibrated": 0.8967545628547668,
+      "box_original_pixels": [
+        397,
+        108,
+        474,
+        173
+      ],
+      "feature_grade": null,
+      "feature_score_uncalibrated": null,
+      "status": "PART_ONLY",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    },
+    {
+      "detection": 4,
+      "part": "Head",
+      "yolo_grade": "B",
+      "yolo_score_uncalibrated": 0.8923323154449463,
+      "box_original_pixels": [
+        516,
+        60,
+        586,
+        132
+      ],
+      "feature_grade": null,
+      "feature_score_uncalibrated": null,
+      "status": "PART_ONLY",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    },
+    {
+      "detection": 5,
+      "part": "Body",
+      "yolo_grade": "B",
+      "yolo_score_uncalibrated": 0.8821231126785278,
+      "box_original_pixels": [
+        473,
+        0,
+        568,
+        57
+      ],
+      "feature_grade": "B",
+      "feature_score_uncalibrated": 0.5329392694088615,
+      "status": "REVIEW: methods disagree or score is low; PART_TOUCHES_FRAME",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    },
+    {
+      "detection": 6,
+      "part": "Head",
+      "yolo_grade": "B",
+      "yolo_score_uncalibrated": 0.8744454979896545,
+      "box_original_pixels": [
+        455,
+        78,
+        528,
+        146
+      ],
+      "feature_grade": null,
+      "feature_score_uncalibrated": null,
+      "status": "PART_ONLY",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    },
+    {
+      "detection": 7,
+      "part": "Body",
+      "yolo_grade": "B",
+      "yolo_score_uncalibrated": 0.8642153143882751,
+      "box_original_pixels": [
+        338,
+        1,
+        444,
+        102
+      ],
+      "feature_grade": "C",
+      "feature_score_uncalibrated": 0.3612935448583257,
+      "status": "REVIEW: methods disagree or score is low; PART_TOUCHES_FRAME",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    },
+    {
+      "detection": 8,
+      "part": "Head",
+      "yolo_grade": "B",
+      "yolo_score_uncalibrated": 0.8600342273712158,
+      "box_original_pixels": [
+        177,
+        41,
+        236,
+        117
+      ],
+      "feature_grade": null,
+      "feature_score_uncalibrated": null,
+      "status": "PART_ONLY",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    },
+    {
+      "detection": 9,
+      "part": "Body",
+      "yolo_grade": "B",
+      "yolo_score_uncalibrated": 0.8321090936660767,
+      "box_original_pixels": [
+        291,
+        111,
+        375,
+        224
+      ],
+      "feature_grade": "B",
+      "feature_score_uncalibrated": 0.7544539608411093,
+      "status": "AGREEMENT_ONLY: provisional body grade",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    },
+    {
+      "detection": 10,
+      "part": "Head",
+      "yolo_grade": "B",
+      "yolo_score_uncalibrated": 0.817496120929718,
+      "box_original_pixels": [
+        307,
+        232,
+        386,
+        312
+      ],
+      "feature_grade": null,
+      "feature_score_uncalibrated": null,
+      "status": "PART_ONLY",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    },
+    {
+      "detection": 11,
+      "part": "Body",
+      "yolo_grade": "B",
+      "yolo_score_uncalibrated": 0.804023265838623,
+      "box_original_pixels": [
+        221,
+        121,
+        298,
+        254
+      ],
+      "feature_grade": "B",
+      "feature_score_uncalibrated": 0.46038020484087794,
+      "status": "REVIEW: methods disagree or score is low",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    },
+    {
+      "detection": 12,
+      "part": "Head",
+      "yolo_grade": "B",
+      "yolo_score_uncalibrated": 0.8014839291572571,
+      "box_original_pixels": [
+        136,
+        210,
+        197,
+        296
+      ],
+      "feature_grade": null,
+      "feature_score_uncalibrated": null,
+      "status": "PART_ONLY",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    },
+    {
+      "detection": 13,
+      "part": "Body",
+      "yolo_grade": "B",
+      "yolo_score_uncalibrated": 0.7968571782112122,
+      "box_original_pixels": [
+        227,
+        1,
+        299,
+        105
+      ],
+      "feature_grade": "A",
+      "feature_score_uncalibrated": 0.4528112934166598,
+      "status": "REVIEW: methods disagree or score is low; PART_TOUCHES_FRAME",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    },
+    {
+      "detection": 14,
+      "part": "Head",
+      "yolo_grade": "B",
+      "yolo_score_uncalibrated": 0.7903269529342651,
+      "box_original_pixels": [
+        203,
+        255,
+        265,
+        332
+      ],
+      "feature_grade": null,
+      "feature_score_uncalibrated": null,
+      "status": "PART_ONLY",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    },
+    {
+      "detection": 15,
+      "part": "Tail",
+      "yolo_grade": "B",
+      "yolo_score_uncalibrated": 0.7026250958442688,
+      "box_original_pixels": [
+        430,
+        158,
+        501,
+        221
+      ],
+      "feature_grade": null,
+      "feature_score_uncalibrated": null,
+      "status": "PART_ONLY",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    },
+    {
+      "detection": 16,
+      "part": "Tail",
+      "yolo_grade": "B",
+      "yolo_score_uncalibrated": 0.5073291659355164,
+      "box_original_pixels": [
+        264,
+        27,
+        326,
+        108
+      ],
+      "feature_grade": null,
+      "feature_score_uncalibrated": null,
+      "status": "PART_ONLY",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    }
+  ],
+  "detected_part_counts": {
+    "Body": 8,
+    "Head": 7,
+    "Tail": 2
+  },
+  "whole_fish_count": null,
+  "note": "Missing detection does not prove a missing part. Complete fish can be Rejected."
+}

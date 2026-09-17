@@ -1,0 +1,13 @@
+class,count
+Grade_A_Body,275
+Grade_A_Head,230
+Grade_A_Tail,226
+Grade_B_Body,470
+Grade_B_Head,477
+Grade_B_Tail,288
+Grade_C_Body,3042
+Grade_C_Head,2343
+Grade_C_Tail,1379
+Rejected_Body,1208
+Rejected_Head,1126
+Rejected_Tail,556

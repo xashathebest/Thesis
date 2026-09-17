@@ -239,6 +239,7 @@ def extract_color_features(
         "mean_lab_b": float(fish_lab[:, 2].mean()),
         "lab_b_p90": float(np.percentile(fish_lab[:, 2], 90)),
         "circular_mean_hue_deg": _circular_hue_mean(fish_hsv[:, 0], fish_hsv[:, 1]),
+        "median_hue_deg": float(np.median(fish_hsv[:, 0])),
         "mean_saturation": float(fish_hsv[:, 1].mean()),
         "median_saturation": float(np.median(fish_hsv[:, 1])),
         "mean_value": float(fish_hsv[:, 2].mean()),
@@ -275,4 +276,3 @@ def extract_color_features(
             for prefix in ("yellow", "brown", "dark", "discoloration"):
                 result[f"{prefix}_{region_name}_ratio_proxy"] = float("nan")
     return result
-

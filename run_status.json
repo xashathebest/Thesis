@@ -1,0 +1,7 @@
+{
+  "status": "TRAINING_COMPLETED",
+  "validation": "NOT_AVAILABLE",
+  "test": "NOT_AVAILABLE",
+  "whole_fish_grading_validated": false,
+  "note": "Training demos/loss are not accuracy. Features and grade agreement are provisional."
+}

@@ -1,0 +1,32 @@
+{
+  "config": {
+    "run_name": "tamban_yolo26_complete_v2",
+    "model": "yolo26s.pt",
+    "epochs": 40,
+    "image_size": 640,
+    "batch_size": 4,
+    "accumulate": 8,
+    "learning_rate": 0.0003,
+    "weight_decay": 0.0001,
+    "warmup_epochs": 3,
+    "amp": true,
+    "seed": 42,
+    "save_to_drive": true,
+    "resume": true,
+    "save_every": 5,
+    "ultralytics_version": "8.4.153",
+    "foreground_gray_floor": 40,
+    "highlight_value_floor": 220,
+    "highlight_saturation_ceiling": 80,
+    "yellow_hue_low": 15,
+    "yellow_hue_high": 40,
+    "yellow_saturation_floor": 40,
+    "darkline_response_floor": 15,
+    "forest_trees": 250,
+    "detection_confidence": 0.25,
+    "agreement_score": 0.6,
+    "download_results": true
+  },
+  "zip_sha256": "4061dcd9d940b86f0c957acbe024766d3b5812eb15776b8b19d96b19274ca4a2",
+  "protocol": "complete_cell_v2"
+}

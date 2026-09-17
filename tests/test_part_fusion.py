@@ -276,8 +276,8 @@ class RuntimeCompatibilityTests(unittest.TestCase):
         self.assertEqual(aggregate.fish_id, 55)
 
         tracker = TrackingManager(TrackingConfig(line_position=0.5))
-        first = Detection(0, aggregate.winning_class, aggregate.winning_percentage / 100, (30, 20, 50, 60), 55)
-        second = Detection(0, aggregate.winning_class, aggregate.winning_percentage / 100, (55, 20, 75, 60), 55)
+        first = Detection(0, "Fish", 0.9, (30, 20, 50, 60), 55)
+        second = Detection(0, "Fish", 0.9, (55, 20, 75, 60), 55)
         tracker.update([first], (100, 100), timestamp=0.0)
         self.assertEqual(len(tracker.update([second], (100, 100), timestamp=0.1)), 1)
         self.assertEqual(tracker.update([second], (100, 100), timestamp=0.2), [])

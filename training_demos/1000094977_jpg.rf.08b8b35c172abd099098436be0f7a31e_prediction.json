@@ -1,0 +1,123 @@
+{
+  "parts": [
+    {
+      "detection": 0,
+      "part": "Head",
+      "yolo_grade": "A",
+      "yolo_score_uncalibrated": 0.9047684669494629,
+      "box_original_pixels": [
+        320,
+        295,
+        396,
+        360
+      ],
+      "feature_grade": null,
+      "feature_score_uncalibrated": null,
+      "status": "PART_ONLY",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    },
+    {
+      "detection": 1,
+      "part": "Body",
+      "yolo_grade": "A",
+      "yolo_score_uncalibrated": 0.8824608325958252,
+      "box_original_pixels": [
+        322,
+        143,
+        408,
+        293
+      ],
+      "feature_grade": "A",
+      "feature_score_uncalibrated": 0.9768979981582622,
+      "status": "AGREEMENT_ONLY: provisional body grade",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    },
+    {
+      "detection": 2,
+      "part": "Head",
+      "yolo_grade": "A",
+      "yolo_score_uncalibrated": 0.8816003203392029,
+      "box_original_pixels": [
+        63,
+        284,
+        147,
+        360
+      ],
+      "feature_grade": null,
+      "feature_score_uncalibrated": null,
+      "status": "PART_ONLY",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    },
+    {
+      "detection": 3,
+      "part": "Body",
+      "yolo_grade": "A",
+      "yolo_score_uncalibrated": 0.8196860551834106,
+      "box_original_pixels": [
+        86,
+        163,
+        211,
+        282
+      ],
+      "feature_grade": "A",
+      "feature_score_uncalibrated": 0.9789992772399286,
+      "status": "AGREEMENT_ONLY: provisional body grade",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    },
+    {
+      "detection": 4,
+      "part": "Tail",
+      "yolo_grade": "A",
+      "yolo_score_uncalibrated": 0.8080946803092957,
+      "box_original_pixels": [
+        166,
+        72,
+        258,
+        160
+      ],
+      "feature_grade": null,
+      "feature_score_uncalibrated": null,
+      "status": "PART_ONLY",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    },
+    {
+      "detection": 5,
+      "part": "Tail",
+      "yolo_grade": "A",
+      "yolo_score_uncalibrated": 0.790359616279602,
+      "box_original_pixels": [
+        331,
+        42,
+        411,
+        142
+      ],
+      "feature_grade": null,
+      "feature_score_uncalibrated": null,
+      "status": "PART_ONLY",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    },
+    {
+      "detection": 6,
+      "part": "Tail",
+      "yolo_grade": "A",
+      "yolo_score_uncalibrated": 0.42053210735321045,
+      "box_original_pixels": [
+        323,
+        43,
+        414,
+        177
+      ],
+      "feature_grade": null,
+      "feature_score_uncalibrated": null,
+      "status": "PART_ONLY",
+      "whole_fish_completeness": "NOT_ESTABLISHED"
+    }
+  ],
+  "detected_part_counts": {
+    "Head": 2,
+    "Body": 2,
+    "Tail": 3
+  },
+  "whole_fish_count": null,
+  "note": "Missing detection does not prove a missing part. Complete fish can be Rejected."
+}
