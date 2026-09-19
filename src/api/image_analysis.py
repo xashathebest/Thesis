@@ -107,8 +107,7 @@ class StillImageAnalyzer:
                 cv2.rectangle(frame, (int(left), int(top)), (int(right), int(bottom)), color, 1)
                 cv2.putText(frame, region, (max(0, int(left)), max(15, int(top) - 3)), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA)
 
-    @staticmethod
-    def _fish_payload(fish: _UploadFish, frame_width: int, frame_height: int) -> dict[str, object]:
+    def _fish_payload(self, fish: _UploadFish, frame_width: int, frame_height: int) -> dict[str, object]:
         parts: list[dict[str, object]] = []
         if fish.quality_result and fish.crop_bounds is not None:
             for part in fish.quality_result.parts:
@@ -124,6 +123,14 @@ class StillImageAnalyzer:
             "source": "Model 1 whole-fish detector",
             "note": "Detection confidence is retained for traceability and does not modify Model 2 grade scores.",
         }
+        traceability = analysis.get("traceability") if isinstance(analysis.get("traceability"), dict) else {}
+        traceability = dict(traceability)
+        traceability.update({
+            "model1_checkpoint": self.detector.weights_path.name if getattr(self.detector, "weights_path", None) else None,
+            "model1_checkpoint_sha256": getattr(self.detector, "checkpoint_sha256", None),
+            "detection_threshold": getattr(self.detector, "confidence_threshold", None),
+        })
+        analysis["traceability"] = traceability
         return {
             "id": fish.index,
             "bbox": [round(value, 2) for value in fish.bbox],
@@ -152,7 +159,15 @@ class StillImageAnalyzer:
             if self.quality_model is not None and self.quality_model.model is not None:
                 crop, crop_bounds = crop_fish(frame, bounded, padding=self.roi_padding)
                 if isinstance(self.quality_model, YoloQualityModel):
-                    quality_result = self.quality_model.predict(crop, index, stabilize=False)
+                    quality_result = self.quality_model.predict(
+                        crop,
+                        index,
+                        stabilize=False,
+                        frame_id=f"still-{index}",
+                        detection_confidence=detection.confidence,
+                        parent_bbox=bounded,
+                        frame_shape=frame.shape,
+                    )
                 else:  # Compatibility for the prior experimental RF-DETR adapter.
                     quality_result = self.quality_model.predict(crop, index)
             fish = _UploadFish(index, bounded, detection.confidence, quality_result, crop_bounds)

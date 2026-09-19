@@ -275,14 +275,15 @@ def normalize_masked_instance(
         if head_projection > 0:
             major_x, major_y = -major_x, -major_y
 
-    # PIL uses positive counter-clockwise angles.  The principal axis itself is
-    # already at ``atan2(y, x)``, so its inverse rotation makes that axis
-    # horizontal.  Using the same sign would double the observed tilt.
+    # ``atan2`` uses image rows as positive y, while PIL's visual rotation has
+    # the opposite sign in that coordinate system. ``rotation_degrees`` stays
+    # as the documented PCA inverse rotation; the value passed to PIL is its
+    # inverse so a down-right diagonal is actually made horizontal.
     rotation_degrees = -math.degrees(math.atan2(major_y, major_x))
     rotated_image, rotated_mask, rotated_marker = _rotate_arrays(
         working_image,
         working_mask,
-        rotation_degrees,
+        -rotation_degrees,
         local_head_point,
     )
 

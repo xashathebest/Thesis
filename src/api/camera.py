@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import logging
+import os
 from threading import Event, Lock, Thread
 from time import monotonic
 from typing import Any
@@ -15,6 +17,8 @@ from src.inference.part_fusion import PartDetection
 from src.inference.part_model import YoloPartModel
 from src.inference.preprocessing import CropBounds, crop_fish, translate_bbox_to_frame
 
+
+LOGGER = logging.getLogger(__name__)
 
 PART_GRADE_COLORS = {
     "Class A": (76, 175, 80),
@@ -59,6 +63,7 @@ class CameraInspectionService:
             raise ValueError("FISH_QUALITY_INTERVAL must be greater than zero.")
         self.quality_interval = quality_interval
         self.quality_roi_padding = quality_roi_padding
+        self.debug_inference = os.getenv("LEMURU_DEBUG_INFERENCE", "false").strip().lower() in {"1", "true", "yes", "on"}
         self._frame_index = 0
         self._last_segmented_frame: dict[int, int] = {}
         self._track_grades: dict[int, QualitySummary] = {}
@@ -226,6 +231,13 @@ class CameraInspectionService:
                 translated = translate_bbox_to_frame(part.bbox, crop_bounds, width, height)
                 if translated is not None:
                     left, top, right, bottom = translated
+                    if display["part_overlays"]:
+                        # Model 2 supplies a detection box, not a segmentation
+                        # mask. Tint its measured box without fabricating pixel
+                        # geometry for the fish part.
+                        overlay = annotated.copy()
+                        cv2.rectangle(overlay, (int(left), int(top)), (int(right), int(bottom)), color, -1)
+                        cv2.addWeighted(overlay, 0.20, annotated, 0.80, 0, annotated)
                     if display["outlines"]:
                         cv2.rectangle(annotated, (int(left), int(top)), (int(right), int(bottom)), color, 1)
                     if display["features"]:
@@ -305,7 +317,31 @@ class CameraInspectionService:
                     continue
                 try:
                     crop, crop_bounds = crop_fish(frame, detection.bbox, padding=self.quality_roi_padding)
-                    result = self.quality_model.predict(crop, detection.track_id)
+                    crop_height, crop_width = crop.shape[:2]
+                    if self.debug_inference:
+                        LOGGER.info(
+                            "[Model 1] Fish #%s confidence=%.2f%% bbox=%s -> Model 2 crop=%sx%s",
+                            detection.track_id,
+                            detection.confidence * 100,
+                            tuple(round(value, 1) for value in detection.bbox),
+                            crop_width,
+                            crop_height,
+                        )
+                    if isinstance(self.quality_model, YoloQualityModel):
+                        # The production Model 2 uses the parent-detection and
+                        # frame context for traceability and frame-quality
+                        # evidence. Older adapters only accept the original
+                        # ``(crop, track_id)`` signature.
+                        result = self.quality_model.predict(
+                            crop,
+                            detection.track_id,
+                            frame_id=self._frame_index,
+                            detection_confidence=detection.confidence,
+                            parent_bbox=detection.bbox,
+                            frame_shape=frame.shape,
+                        )
+                    else:
+                        result = self.quality_model.predict(crop, detection.track_id)
                     summary = result.summary()
                     analysis = dict(summary.analysis)
                     analysis["model1_detection"] = {
@@ -313,10 +349,61 @@ class CameraInspectionService:
                         "source": "Model 1 whole-fish detector",
                         "note": "Detection confidence is retained for traceability and does not modify Model 2 grade scores.",
                     }
+                    model2_detections = [
+                        {
+                            "label": getattr(part, "source_class_name", getattr(part, "class_name", "unknown")),
+                            "region": getattr(part, "region", getattr(part, "part", "unknown")),
+                            "grade": getattr(part, "grade", getattr(part, "quality", "unknown")),
+                            "evidence_score": getattr(part, "confidence", None),
+                            "crop_bbox": list(getattr(part, "bbox", ())),
+                        }
+                        for part in result.parts
+                    ]
+                    analysis["inference_debug"] = {
+                        "model1_detection": {
+                            "fish_id": detection.track_id,
+                            "confidence": detection.confidence,
+                            "frame_bbox": list(detection.bbox),
+                        },
+                        "fish_crop_dimensions": {"width": crop_width, "height": crop_height},
+                        "model2_detections": model2_detections,
+                        "weighted_scores": dict(analysis.get("weighted_scores", {})),
+                        "final_decision": {
+                            "grade": analysis.get("final_grade", "Ungraded"),
+                            "support": analysis.get("final_score"),
+                            "best_evidence_grade": analysis.get("provisional_grade"),
+                            "best_evidence_support": analysis.get("provisional_score"),
+                            "status": analysis.get("verdict_status"),
+                            "reason": analysis.get("verdict_reason_text"),
+                        },
+                    }
+                    if self.debug_inference:
+                        LOGGER.info(
+                            "[Model 2] Fish #%s detections=%s weighted_scores=%s final=%s (%s)",
+                            detection.track_id,
+                            model2_detections,
+                            analysis["inference_debug"]["weighted_scores"],
+                            analysis["inference_debug"]["final_decision"].get("grade"),
+                            analysis["inference_debug"]["final_decision"].get("status"),
+                        )
+                    traceability = analysis.get("traceability") if isinstance(analysis.get("traceability"), dict) else {}
+                    traceability = dict(traceability)
+                    traceability.update({
+                        "model1_checkpoint": self.model.weights_path.name if getattr(self.model, "weights_path", None) else None,
+                        "model1_checkpoint_sha256": getattr(self.model, "checkpoint_sha256", None),
+                        "detection_threshold": getattr(self.model, "confidence_threshold", self.state.confidence_threshold),
+                    })
+                    analysis["traceability"] = traceability
+                    performance = analysis.get("performance") if isinstance(analysis.get("performance"), dict) else {}
+                    performance = dict(performance)
+                    detector_seconds = getattr(self.model, "last_inference_seconds", None)
+                    performance["model1_inference_ms"] = round(float(detector_seconds) * 1000, 3) if detector_seconds is not None else None
+                    analysis["performance"] = performance
                     self._track_grades[detection.track_id] = replace(summary, analysis=analysis)
                     self._last_segmented_frame[detection.track_id] = self._frame_index
                     fresh.append((result, crop_bounds))
                 except Exception as exc:
+                    LOGGER.exception("Model 2 processing failed for Fish #%s.", detection.track_id)
                     self.state.set_segmenter("error", self.quality_model.name, str(self.quality_model.weights_path), f"Quality Model inference failed: {exc}")
         active_ids = {detection.track_id for detection in detections if detection.track_id is not None}
         self._track_grades = {track_id: grade for track_id, grade in self._track_grades.items() if track_id in active_ids}
@@ -324,12 +411,44 @@ class CameraInspectionService:
         if self.quality_model is not None and hasattr(self.quality_model, "prune_tracks"):
             self.quality_model.prune_tracks(active_ids)
         processing_time_ms = (monotonic() - processing_started) * 1000
-        self.state.process_detections(
+        # Attach the full per-frame pipeline time before history/event creation.
+        self._track_grades = {
+            track_id: replace(
+                grade,
+                analysis={
+                    **grade.analysis,
+                    "performance": {
+                        **(grade.analysis.get("performance") if isinstance(grade.analysis.get("performance"), dict) else {}),
+                        "total_processing_ms": round(processing_time_ms, 3),
+                    },
+                },
+            )
+            for track_id, grade in self._track_grades.items()
+        }
+        tracking_started = monotonic()
+        events = self.state.process_detections(
             detections,
             frame_size,
             grades=self._track_grades,
             processing_time_ms=processing_time_ms,
         )
+        tracking_ms = (monotonic() - tracking_started) * 1000
+        for event in events:
+            event_performance = event.analysis.get("performance") if isinstance(event.analysis.get("performance"), dict) else {}
+            self.state.tracking.update_event_analysis(
+                event.track_id,
+                {"performance": {**event_performance, "tracking_ms": round(tracking_ms, 3)}},
+            )
+        if self.quality_model is not None and hasattr(self.quality_model, "finalize_track"):
+            for event in events:
+                try:
+                    best_frame = self.quality_model.finalize_track(event.track_id)
+                    if best_frame:
+                        self.state.tracking.update_event_analysis(event.track_id, {"best_frame": best_frame})
+                except Exception as exc:
+                    # Representative crop saving is optional; never lose a
+                    # count or AI result because it failed after finalization.
+                    self.state.set_segmenter("error", self.quality_model.name, str(self.quality_model.weights_path), f"Best-frame finalization failed: {exc}")
         return self._annotate_quality(self._annotate(frame, detections, cv2), fresh, cv2)
 
     def _run(self) -> None:

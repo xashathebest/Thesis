@@ -16,6 +16,7 @@ from src.api.runtime import PART_PREVIEW_MODE, WHOLE_FISH_MODE
 # anatomical-part semantics, so the tracking/counting path recognizes only Fish.
 CLASS_NAMES = ("Fish",)
 QUALITY_COUNTER_NAMES = ("Class A", "Class B", "Class C", "Rejected", "Ungraded")
+MANUAL_GRADE_NAMES = ("Class A", "Class B", "Class C", "Rejected")
 VALID_DIRECTIONS = ("left_to_right", "right_to_left", "top_to_bottom", "bottom_to_top")
 SESSION_ARCHIVE_LIMIT = 10_000
 
@@ -207,6 +208,10 @@ class TrackState:
             "parts": [dict(part) for part in self.quality_parts],
             "quality_votes": dict(self.quality_votes),
             "analysis": dict(self.quality_analysis),
+            "first_seen_monotonic": self.created_at,
+            "last_seen_monotonic": self.last_seen,
+            "track_duration_seconds": max(0.0, self.last_seen - self.created_at),
+            "finalized_state": "counted" if self.counted else "active",
         }
 
 
@@ -225,6 +230,10 @@ class InspectionEvent:
     parts: tuple[dict[str, object], ...] = ()
     processing_time_ms: float | None = None
     analysis: dict[str, object] = field(default_factory=dict)
+    # Manual review is intentionally separate from the original AI result.
+    manual_override: bool = False
+    manual_grade: str | None = None
+    review_timestamp: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -241,6 +250,9 @@ class InspectionEvent:
             "parts": [dict(part) for part in self.parts],
             "processing_time_ms": round(self.processing_time_ms, 1) if self.processing_time_ms is not None else None,
             "analysis": dict(self.analysis),
+            "manual_override": self.manual_override,
+            "manual_grade": self.manual_grade,
+            "review_timestamp": self.review_timestamp,
         }
 
 
@@ -335,6 +347,22 @@ class TrackingManager:
             return previous[1] < line <= current[1]
         return previous[1] > line >= current[1]
 
+    @staticmethod
+    def _event_analysis(track: TrackState) -> dict[str, object]:
+        """Merge grade evidence with non-claiming persistent-track diagnostics."""
+
+        result = dict(track.quality_analysis)
+        result["track_stability"] = {
+            "track_id": track.track_id,
+            "number_of_frames": len(track.observations),
+            "first_seen_monotonic": track.created_at,
+            "last_seen_monotonic": track.last_seen,
+            "track_duration_seconds": max(0.0, track.last_seen - track.created_at),
+            "finalized_state": "counted" if track.counted else "active",
+            "id_switch_check": "No separate ID-switch classifier is configured; evidence remains keyed to the persistent Model 1 tracker ID.",
+        }
+        return result
+
     def update(
         self,
         detections: Iterable[Detection],
@@ -381,7 +409,7 @@ class TrackingManager:
                                 quality=track.quality,
                                 quality_confidence=track.quality_confidence,
                                 parts=track.quality_parts,
-                                analysis=track.quality_analysis,
+                                analysis=self._event_analysis(track),
                             )
                             if event.track_id == track_id
                             else event
@@ -396,7 +424,7 @@ class TrackingManager:
                                 quality=track.quality,
                                 quality_confidence=track.quality_confidence,
                                 parts=track.quality_parts,
-                                analysis=track.quality_analysis,
+                                analysis=self._event_analysis(track),
                             )
                             if event.track_id == track_id
                             else event
@@ -424,7 +452,7 @@ class TrackingManager:
                     quality_confidence=track.quality_confidence,
                     parts=track.quality_parts,
                     processing_time_ms=processing_time_ms,
-                    analysis=track.quality_analysis,
+                    analysis=self._event_analysis(track),
                 )
                 self._history.appendleft(event)
                 self._archive.appendleft(event)
@@ -449,6 +477,73 @@ class TrackingManager:
 
         with self._lock:
             return [event.to_dict() for event in self._archive]
+
+    def review_queue(self, *, include_reviewed: bool = False) -> list[dict[str, object]]:
+        """Return fish whose original AI verdict needs operator review."""
+
+        with self._lock:
+            values = []
+            for event in self._archive:
+                analysis = event.analysis
+                needs_review = isinstance(analysis, dict) and analysis.get("verdict_status") == "NEEDS_REVIEW"
+                if needs_review and (include_reviewed or not event.manual_override):
+                    values.append(event.to_dict())
+            return values
+
+    def apply_manual_review(self, track_id: int, manual_grade: str | None) -> dict[str, object]:
+        """Store an operator's final grade without changing the AI verdict."""
+
+        if manual_grade is not None and manual_grade not in MANUAL_GRADE_NAMES:
+            raise ValueError(f"manual_grade must be one of: {', '.join(MANUAL_GRADE_NAMES)}.")
+        with self._lock:
+            found = False
+            review_time = datetime.now().astimezone().isoformat(timespec="seconds") if manual_grade is not None else None
+            def reviewed(event: InspectionEvent) -> InspectionEvent:
+                nonlocal found
+                if event.track_id != track_id:
+                    return event
+                found = True
+                return replace(
+                    event,
+                    manual_override=manual_grade is not None,
+                    manual_grade=manual_grade,
+                    review_timestamp=review_time,
+                )
+
+            self._history = deque((reviewed(event) for event in self._history), maxlen=self.config.history_limit)
+            self._archive = deque((reviewed(event) for event in self._archive), maxlen=SESSION_ARCHIVE_LIMIT)
+            if not found:
+                raise KeyError(track_id)
+            for event in self._archive:
+                if event.track_id == track_id:
+                    return event.to_dict()
+            # Defensive fallback for a very small archive limit.
+            raise KeyError(track_id)
+
+    def update_event_analysis(self, track_id: int, updates: dict[str, object]) -> dict[str, object] | None:
+        """Add finalized metadata (for example one saved best crop) to an event.
+
+        This does not alter the original AI verdict, quality counters, or any
+        manual review fields. Later live grade refreshes retain the same values
+        through the normal event replacement path.
+        """
+
+        with self._lock:
+            found: InspectionEvent | None = None
+
+            def merge(event: InspectionEvent) -> InspectionEvent:
+                nonlocal found
+                if event.track_id != track_id:
+                    return event
+                analysis = dict(event.analysis)
+                analysis.update(updates)
+                result = replace(event, analysis=analysis)
+                found = result
+                return result
+
+            self._history = deque((merge(event) for event in self._history), maxlen=self.config.history_limit)
+            self._archive = deque((merge(event) for event in self._archive), maxlen=SESSION_ARCHIVE_LIMIT)
+            return found.to_dict() if found is not None else None
 
     def counters(self) -> dict[str, int]:
         with self._lock:
@@ -493,7 +588,10 @@ class InspectionState:
         self.frame_size: tuple[int, int] | None = None
         self.session_started_at = datetime.now().astimezone().isoformat(timespec="seconds")
         self.display_settings = {
-            "masks": False,
+            # The deployed Model 2 is a detector, so it has boxes rather than
+            # segmentation masks. This switch controls a translucent fill of
+            # those measured part boxes and does not claim to be a mask.
+            "part_overlays": False,
             "fish_ids": True,
             "grades": True,
             "confidence": True,
@@ -623,6 +721,13 @@ class InspectionState:
             self.quality_confidence_threshold = value
 
     def set_display_settings(self, updates: dict[str, bool]) -> None:
+        updates = dict(updates)
+        # Let a browser with a cached pre-overlay UI update safely while the
+        # server exposes the clearer ``part_overlays`` setting going forward.
+        if "masks" in updates:
+            if "part_overlays" in updates:
+                raise ValueError("Use only one of masks or part_overlays in a display update.")
+            updates["part_overlays"] = updates.pop("masks")
         allowed = set(self.display_settings)
         invalid = set(updates) - allowed
         if invalid:
@@ -661,6 +766,23 @@ class InspectionState:
             else:
                 system_status = "attention"
             active_tracks = self.tracking.active_tracks()
+            # The live result panel must follow a currently detected fish, not
+            # wait until that fish crosses the virtual counting line.  Completed
+            # events remain available as the fallback when no track is active.
+            current_detection: dict[str, object] | None = None
+            if active_tracks:
+                current_detection = dict(
+                    max(active_tracks, key=lambda track: float(track.get("last_seen_monotonic", 0.0)))
+                )
+                current_detection["live_track"] = True
+            elif latest_event is not None:
+                current_detection = dict(latest_event)
+            counters = self.tracking.counters()
+            try:
+                elapsed_seconds = max(0.0, (datetime.now().astimezone() - datetime.fromisoformat(self.session_started_at)).total_seconds())
+            except ValueError:
+                elapsed_seconds = 0.0
+            fish_per_minute = counters["total"] / elapsed_seconds * 60.0 if elapsed_seconds else 0.0
             return {
                 "runtime_mode": self.runtime_mode,
                 "model_task": self.model_task,
@@ -685,11 +807,19 @@ class InspectionState:
                 "active_fish_count": len(active_tracks),
                 "active_tracks": active_tracks,
                 "latest_event": latest_event,
-                "current_detection": latest_event,
+                "current_detection": current_detection,
                 "detections": [detection.to_dict() for detection in self.detections],
-                "counters": self.tracking.counters(),
+                "counters": counters,
                 "quality_counters": self.tracking.quality_counters(),
                 "recent_history": self.tracking.history(),
                 "archive_size": len(self.tracking.archive_history()),
+                "review_queue_count": len(self.tracking.review_queue()),
+                "system_performance": {
+                    "fps": round(self.fps, 2),
+                    "frames_published": self.frame_version,
+                    "fish_per_minute": round(fish_per_minute, 2),
+                    "dropped_frames": None,
+                    "dropped_frames_note": "Camera backend does not expose a reliable dropped-frame count.",
+                },
                 "tracking_config": self.tracking.config.to_dict(),
             }

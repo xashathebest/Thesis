@@ -15,6 +15,7 @@ from src.api.camera import CameraInspectionService
 from src.inference.fish_detector import FishDetector, resolve_fish_detector_model_path
 from src.inference.preprocessing import crop_fish as extract_preprocessed_fish_crop, translate_mask_to_frame
 from src.inference.fish_segmenter import (
+    FishSegmentation,
     FishSegmenter,
     FishSegmenterInferenceError,
     InvalidFishCropError,
@@ -196,7 +197,7 @@ class TwoModelCameraIntegrationTests(unittest.TestCase):
                 self.calls = 0
 
             def predict(self, crop, track_id):
-                quality = "A" if self.calls == 0 else "Rejected"
+                quality = "Class A" if self.calls == 0 else "Rejected"
                 self.calls += 1
                 part = SegmentPart(0, f"{quality}_body", quality, "Body", 0.93, (0, 0, crop.shape[1], crop.shape[0]), np.ones(crop.shape[:2], dtype=bool))
                 return FishSegmentation(track_id, quality, 0.93, (part,), {quality: 0.93})
@@ -214,14 +215,14 @@ class TwoModelCameraIntegrationTests(unittest.TestCase):
         detector.detections = [Detection(0, "Fish", 0.9, (55, 5, 75, 25), 14)]
         service.process_frame(frame, cv2)  # Still inside the interval: no Model 2 call.
         self.assertEqual(segmenter.calls, 1)
-        self.assertEqual(state.snapshot()["quality_counters"]["A"], 1)
+        self.assertEqual(state.snapshot()["quality_counters"]["Class A"], 1)
 
         detector.detections = [Detection(0, "Fish", 0.9, (60, 5, 80, 25), 14)]
         service.process_frame(frame, cv2)  # Frame gap is three: fresh Rejected grade corrects the event.
         snapshot = state.snapshot()
         self.assertEqual(segmenter.calls, 2)
         self.assertEqual(snapshot["counters"]["total"], 1)
-        self.assertEqual(snapshot["quality_counters"]["A"], 0)
+        self.assertEqual(snapshot["quality_counters"]["Class A"], 0)
         self.assertEqual(snapshot["quality_counters"]["Rejected"], 1)
         self.assertEqual(sum(snapshot["quality_counters"].values()), snapshot["counters"]["total"])
 

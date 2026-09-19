@@ -249,10 +249,12 @@ The normal runtime uses this exact flow for one persistent Model 1 ID:
 Model 1 Fish detection + ID
   -> bounded Fish crop
   -> Model 2 Head/Body/Tail grade boxes
+  -> optional conservative frame-quality gate + sharpness measurement
   -> strongest box for each (region, grade) in that frame
   -> mean evidence over frames where that region was observed
   -> Body/Head/Tail weighted score for every final grade
-  -> transparent final verdict, HSV measurements, history, and export
+  -> evidence coverage + minimum-evidence checks + final acceptance gate
+  -> automatic grade OR Ungraded / Needs Review, with HSV, history, and export
 ```
 
 `configs/grading_engine.yaml` is the sole source of the active default part
@@ -271,9 +273,26 @@ region was observed.
 
 Body evidence is required by default. An unobserved Head or Tail is **Unknown**,
 not physically missing; its original weight is removed and the remaining observed
-weights are renormalized. A live result stays Ungraded until it has the configured
-two observations and meets the minimum weighted score. Still-image analysis emits
-its one-observation result clearly labeled as such.
+weights are renormalized. The result also retains original anatomical evidence
+coverage: Body-only is 50%, Body+Head is 80%, and all three parts are 100%.
+Renormalization therefore never makes Body-only evidence look like 100% coverage.
+
+The active `standard` configuration requires Body, at least one observed region,
+50% original coverage, and **50% final weighted support** before automatically
+assigning a class. `strict` mode reads its stronger region/coverage requirements
+from the same YAML file. The 50% value is an adjustable operating rule, not a
+scientific calibration claim. A low score (for example, Body `Grade_C_Body` at
+41.81%) becomes **Ungraded / Needs Review**, not Rejected. Each record carries a
+structured status and reason code such as `LOW_FINAL_SUPPORT`,
+`INSUFFICIENT_REGION_COVERAGE`, `BODY_NOT_OBSERVED`, or
+`UNSTABLE_TEMPORAL_EVIDENCE`.
+
+Live evidence stores count/mean/min/max/standard-deviation/detection-frequency
+statistics for every region/grade. A valid crop's Laplacian-variance sharpness is
+measured for diagnostics and best-frame selection; filtering is inactive unless
+explicit thresholds are enabled in `configs/grading_engine.yaml`. One candidate
+metadata record is retained per track. Optional crop storage saves only that best
+crop at finalization, never every frame.
 
 The supplied checkpoints have no trained crack, yellowing, fatty, deformation, or
 missing-part class. Their trained `Rejected_*` labels participate in the regular
@@ -285,13 +304,19 @@ actual Model 2 part-box ROI: mean hue, mean saturation/value, and yellow/brown/d
 measurement proxies. Both checkpoints are detection-only, so the measurement is
 explicitly tagged as a rectangular ROI rather than a segmentation mask. The
 existing project proxy settings are reused, but no colour metric alters a grade
-without a validated configured rule. The UI's **View full analysis** reveals every
-part contribution, all four scores, retained Model 1 confidence, colour evidence,
-adjustments, and any override reason. A fish ID in History opens the same record.
+without a validated configured rule. The UI's **View full analysis** reveals the
+Model 1 detector confidence, Model 2 evidence support (not a calibrated
+probability), original coverage, effective weights, every part contribution and
+temporal statistic, all four scores, HSV, best frame, adjustment state, and any
+override reason. A fish ID in History opens the same record. The **Review Queue**
+keeps uncertain AI results separate from real Rejected fish; an operator can record
+A/B/C/Rejected as a manual grade without overwriting the original AI verdict.
 
-CSV and Excel exports include numeric weighted scores and per-part contributions.
-Excel adds **Fish Inspections**, **Session Summary**, **Feature Summary**, and
-**Grade Calculation Rules** sheets so a result can be reconstructed offline.
+CSV and Excel exports include numeric weighted supports, evidence coverage,
+per-part temporal statistics, HSV, manual review fields, best-frame metadata,
+model/config versions, shortened startup hashes, and thresholds. Excel contains
+**Fish Inspections**, **Session Summary**, **Feature Summary**,
+**Grade Calculation Rules**, and **Review Queue** sheets.
 
 ### Runtime image preprocessing
 
@@ -430,6 +455,20 @@ $env:LEMURU_TRACK_TIMEOUT = "2.0"
 py -m src.api
 ```
 
+### Live Model 2 diagnostics
+
+For a thesis demonstration, set this before launching the dashboard to print
+each Model 1 fish detection, crop dimensions, Model 2 part detections, weighted
+scores, and the final verdict decision to the server terminal:
+
+```powershell
+$env:LEMURU_DEBUG_INFERENCE = "true"
+py -m src.api
+```
+
+The live result panel follows the newest active Fish ID immediately. It no
+longer waits for a conveyor-line crossing before showing Model 2 evidence.
+
 ### Detector, grading, and dashboard tests
 
 The mocked two-model adapters, frame validation, BGR-to-RGB conversion, normalized
@@ -444,7 +483,26 @@ py -m unittest discover -s tests -p "test_fish_segmenter.py" -v
 py -m unittest discover -s tests -p "test_upload_analysis.py" -v
 py -m unittest discover -s tests -p "test_operator_dashboard.py" -v
 py -m unittest discover -s tests -p "test_grading_engine.py" -v
+py -m unittest discover -s tests -p "test_verdict_acceptance.py" -v
+py -m unittest discover -s tests -p "test_frame_quality.py" -v
+py -m unittest discover -s tests -p "test_fish_level_validation.py" -v
 ```
+
+For offline **whole-fish** validation, provide a JSON/JSONL/CSV record for each
+fish with a ground-truth grade and the system final verdict. The tool reports the
+A/B/C/Rejected confusion matrix, precision/recall/F1, automatic-grading coverage,
+review rate, accuracy conditional on automatic grades, and end-to-end accuracy
+including review outcomes separately. It can also replay several saved
+weight/threshold configurations from recorded part evidence without retraining or
+automatically choosing a configuration:
+
+```powershell
+py -m src.evaluation.fish_level_validation --records results\fish_level_records.json --output results\fish_level_report.json --dataset-split validation
+```
+
+Use validation data to select an operating rule, then run a locked held-out test
+report once. Model evidence support is retained for future calibration analysis but
+is not called a calibrated probability.
 
 To run the real-model smoke test after placing a trusted checkpoint and choosing a
 fish image, opt in explicitly:

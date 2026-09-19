@@ -69,7 +69,7 @@ class FishLevelValidationTests(unittest.TestCase):
         balanced_verdict = recompute_final_verdict(record, balanced)
         body_heavy_verdict = recompute_final_verdict(record, body_heavy)
         self.assertEqual(balanced_verdict["final_grade"], "Class B")
-        self.assertAlmostEqual(balanced_verdict["weighted_scores"]["Class B"], .45)
+        self.assertAlmostEqual(balanced_verdict["weighted_scores"]["Class B"], .455)
         self.assertEqual(body_heavy_verdict["final_grade"], "Class A")
         self.assertAlmostEqual(body_heavy_verdict["weighted_scores"]["Class A"], .56)
 

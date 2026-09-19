@@ -518,8 +518,39 @@ def load_specimen_groups_file(groups_path: Path) -> SpecimenGroups:
                 continue
             seen_instances.add(instance_key)
 
+            # ``annotation_index`` is an explicit one-based polygon identity
+            # in the newer reviewed-mask workflow. Older instance manifests
+            # predate that field, so retain their valid image/instance link
+            # with 0 as an explicit "not supplied" sentinel rather than
+            # rejecting the entire legacy manifest.
+            raw_annotation_index = (row.get("annotation_index") or "").strip()
+            if raw_annotation_index:
+                try:
+                    annotation_index = int(raw_annotation_index)
+                except ValueError:
+                    groups.load_issues.append(
+                        ValidationIssue(
+                            "ERROR",
+                            f"Specimen-group row {row_number} annotation_index must be an integer.",
+                            str(groups_path),
+                        )
+                    )
+                    continue
+                if annotation_index < 1:
+                    groups.load_issues.append(
+                        ValidationIssue(
+                            "ERROR",
+                            f"Specimen-group row {row_number} annotation_index must be positive when provided.",
+                            str(groups_path),
+                        )
+                    )
+                    continue
+            else:
+                annotation_index = 0
+
             association = SpecimenAssociation(
                 image_id=image_id,
+                annotation_index=annotation_index,
                 instance_id=instance_id,
                 specimen_id=specimen_id,
                 scene_id=(row.get("scene_id") or "").strip() or None,

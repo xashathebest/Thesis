@@ -155,10 +155,72 @@ def _analytics(events: list[dict[str, object]], snapshot: dict[str, object]) -> 
     ]
     part_quality: dict[str, list[float]] = {"Head": [], "Body": [], "Tail": []}
     color_trend: list[dict[str, object]] = []
+    coverage_values: list[float] = []
+    observed_region_counts: list[int] = []
+    model2_observation_counts: list[int] = []
+    automatic_count = 0
+    needs_review_count = 0
+    manual_review_count = 0
+    body_only_count = 0
+    two_region_count = 0
+    complete_region_count = 0
+    final_supports: list[float] = []
+    best_supports: list[float] = []
+    performance_values: dict[str, list[float]] = {
+        "model1_inference_ms": [], "model2_inference_ms": [], "grading_engine_ms": [],
+        "hsv_processing_ms": [], "tracking_ms": [], "total_processing_ms": [],
+    }
     for event in chronological:
         analysis = event.get("analysis")
         part_results = analysis.get("part_results") if isinstance(analysis, dict) and isinstance(analysis.get("part_results"), dict) else {}
         colors = analysis.get("color") if isinstance(analysis, dict) and isinstance(analysis.get("color"), dict) else {}
+        if isinstance(analysis, dict):
+            status = analysis.get("verdict_status")
+            automatic_count += int(status == "AUTO_GRADED")
+            needs_review_count += int(status == "NEEDS_REVIEW")
+            coverage = analysis.get("original_weight_coverage")
+            if coverage is not None:
+                try:
+                    coverage_values.append(float(coverage) * 100)
+                except (TypeError, ValueError):
+                    pass
+            regions = analysis.get("observed_regions")
+            region_count = len(regions) if isinstance(regions, list) else sum(
+                int(isinstance(part_results.get(region), dict) and part_results[region].get("present") is True)
+                for region in ("Body", "Head", "Tail")
+            )
+            observed_region_counts.append(region_count)
+            body_only_count += int(region_count == 1 and "Body" in (regions if isinstance(regions, list) else []))
+            two_region_count += int(region_count == 2)
+            complete_region_count += int(region_count == 3)
+            observations = analysis.get("observation_count")
+            if observations is not None:
+                try:
+                    model2_observation_counts.append(int(observations))
+                except (TypeError, ValueError):
+                    pass
+            final_score = analysis.get("final_score")
+            if final_score is not None:
+                try:
+                    final_supports.append(float(final_score) * 100)
+                except (TypeError, ValueError):
+                    pass
+            best_score = analysis.get("provisional_score", analysis.get("best_evidence_score"))
+            if best_score is not None:
+                try:
+                    best_supports.append(float(best_score) * 100)
+                except (TypeError, ValueError):
+                    pass
+            performance = analysis.get("performance")
+            if isinstance(performance, dict):
+                for key, values in performance_values.items():
+                    value = performance.get(key)
+                    if value is not None:
+                        try:
+                            values.append(float(value))
+                        except (TypeError, ValueError):
+                            pass
+        manual_review_count += int(bool(event.get("manual_override")))
         for region in part_quality:
             result = part_results.get(region) if isinstance(part_results, dict) else None
             confidence = result.get("grade_confidence") if isinstance(result, dict) else None
@@ -190,6 +252,22 @@ def _analytics(events: list[dict[str, object]], snapshot: dict[str, object]) -> 
         },
         "color_trend": color_trend,
         "average_whole_fish_hue": round(sum(item["mean_hue_deg"] for item in color_trend) / len(color_trend), 2) if color_trend else None,
+        "automatically_graded": automatic_count,
+        "needs_review": needs_review_count,
+        "manual_reviewed": manual_review_count,
+        "review_queue_count": max(0, needs_review_count - manual_review_count),
+        "body_only_count": body_only_count,
+        "two_region_count": two_region_count,
+        "complete_region_count": complete_region_count,
+        "average_evidence_coverage": round(sum(coverage_values) / len(coverage_values), 1) if coverage_values else None,
+        "average_observed_regions": round(sum(observed_region_counts) / len(observed_region_counts), 2) if observed_region_counts else None,
+        "average_model2_observations": round(sum(model2_observation_counts) / len(model2_observation_counts), 2) if model2_observation_counts else None,
+        "average_final_support": round(sum(final_supports) / len(final_supports), 1) if final_supports else None,
+        "average_best_evidence_support": round(sum(best_supports) / len(best_supports), 1) if best_supports else None,
+        "performance": {
+            key: round(sum(values) / len(values), 2) if values else None
+            for key, values in performance_values.items()
+        },
     }
 
 
@@ -311,6 +389,51 @@ def get_history(
     }
 
 
+def _canonical_manual_grade(value: object) -> str | None:
+    """Accept compact operator choices while persisting the canonical labels."""
+
+    if value is None:
+        return None
+    text = str(value).strip()
+    aliases = {
+        "a": "Class A", "class a": "Class A",
+        "b": "Class B", "class b": "Class B",
+        "c": "Class C", "class c": "Class C",
+        "rejected": "Rejected",
+    }
+    if text.casefold() not in aliases:
+        raise ValueError("manual_grade must be A, B, C, Rejected, or null to clear the review.")
+    return aliases[text.casefold()]
+
+
+@app.get("/api/reviews")
+def get_review_queue(include_reviewed: bool = False) -> dict[str, object]:
+    """List AI results that remain Ungraded / Needs Review."""
+
+    items = state.tracking.review_queue(include_reviewed=include_reviewed)
+    return {"items": items, "total": len(items), "include_reviewed": include_reviewed}
+
+
+@app.post("/api/reviews/{track_id}")
+async def review_fish(track_id: int, request: Request) -> dict[str, object]:
+    """Record a manual final grade while retaining the original AI evidence."""
+
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="Review settings must be valid JSON.") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Review settings must be a JSON object.")
+    try:
+        manual_grade = _canonical_manual_grade(payload.get("manual_grade"))
+        item = state.tracking.apply_manual_review(track_id, manual_grade)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Fish #{track_id} is not in the current session archive.") from None
+    return {"updated": True, "item": item, "review_queue_count": len(state.tracking.review_queue())}
+
+
 @app.get("/api/analytics")
 def get_analytics() -> dict[str, object]:
     snapshot = state.snapshot()
@@ -405,6 +528,15 @@ async def export_history(request: Request) -> Response:
         "Total Fish": len(events),
         "Average Grade Confidence": f"{analytics['average_grade_confidence']:.1f}%" if analytics["average_grade_confidence"] is not None else "",
         "Average Detection Confidence": f"{analytics['average_detection_confidence']:.1f}%" if analytics["average_detection_confidence"] is not None else "",
+        "Automatically Graded": analytics["automatically_graded"],
+        "Needs Review": analytics["needs_review"],
+        "Manual Reviewed": analytics["manual_reviewed"],
+        "Average Evidence Coverage": f"{analytics['average_evidence_coverage']:.1f}%" if analytics["average_evidence_coverage"] is not None else "",
+        "Average Observed Regions": analytics["average_observed_regions"] if analytics["average_observed_regions"] is not None else "",
+        "Average Model 2 Observations": analytics["average_model2_observations"] if analytics["average_model2_observations"] is not None else "",
+        "Body-only Fish": analytics["body_only_count"],
+        "Two-region Fish": analytics["two_region_count"],
+        "Complete Three-region Fish": analytics["complete_region_count"],
         "Average Processing Time (ms)": analytics["average_processing_time_ms"] or "",
         "Average Whole-Fish Hue (deg)": analytics["average_whole_fish_hue"] if analytics["average_whole_fish_hue"] is not None else "",
     }

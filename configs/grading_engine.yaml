@@ -3,69 +3,78 @@
 # thresholds. Keep a version with each finalized fish record for traceability.
 config_version: "2.0"
 
-# These weights apply to Model 2 Head/Body/Tail evidence only. They are not
-# biological colour thresholds and all weights must sum to 1.0.
-head_weight: 0.30
-body_weight: 0.50
-tail_weight: 0.20
+grading:
+  # These weights apply to Model 2 Head/Body/Tail evidence only. They are not
+  # biological colour thresholds and all weights must sum to 1.0.
+  weights:
+    body: 0.50
+    head: 0.30
+    tail: 0.20
 
-# A verdict requires Body evidence because it is the primary quality region.
-# Head/Tail that are not observed remain unknown; available region weights are
-# renormalized rather than treating an absent detection as a zero score.
-require_body: true
-minimum_part_confidence: 0.25
+  # A verdict requires Body evidence because it is the primary quality region.
+  # Head/Tail that are not observed remain unknown; available region weights
+  # are renormalized rather than treating an absent detection as a zero score.
+  require_body: true
+  minimum_part_confidence: 0.25
 
-# A winning weighted Model 2 support score is accepted only after it passes
-# the evidence requirements below.  0.50 is configurable rather than claimed
-# to be an optimal scientific threshold.
-final_verdict_threshold: 0.50
-# Retained for compatibility with older clients; the active final gate is the
-# larger of this value and final_verdict_threshold.
-minimum_final_score: 0.25
-grading_mode: standard
-minimum_regions_observed: 1
-minimum_original_weight_coverage: 0.50
-strict_minimum_regions_observed: 2
-strict_minimum_original_weight_coverage: 0.70
+  # A winning weighted Model 2 support score is accepted only after it passes
+  # the evidence requirements below. 0.50 is configurable rather than claimed
+  # to be an optimal scientific threshold.
+  final_verdict_threshold: 0.50
+  # Retained for compatibility with older clients; the active final gate is the
+  # larger of this value and final_verdict_threshold.
+  minimum_final_score: 0.25
+  grading_mode: standard
+  minimum_regions_observed: 1
+  minimum_original_weight_coverage: 0.50
+  strict_minimum_regions_observed: 2
+  strict_minimum_original_weight_coverage: 0.70
 
-# Live tracks mean-aggregate strongest per-region/per-grade evidence. A verdict
-# waits for this many usable observations. Set maximum_grade_stddev only after
-# validating a stability rule on a suitable dataset.
-minimum_track_observations: 2
-temporal_evidence_limit: 120
-maximum_grade_stddev: null
+  # Live tracks mean-aggregate strongest per-region/per-grade evidence. A
+  # verdict waits for this many usable observations. Set maximum_grade_stddev
+  # only after validating a stability rule on a suitable dataset.
+  temporal:
+    minimum_valid_frames: 2
+    temporal_evidence_limit: 120
+    maximum_grade_stddev: null
+    use_frame_quality_filter: false
 
-# Quality filtering is intentionally conservative by default. Raw sharpness is
-# always measured; no threshold removes a frame unless a corresponding filter
-# is explicitly enabled/configured.
-use_frame_quality_filter: false
-minimum_detection_confidence: null
-minimum_crop_width: null
-minimum_crop_height: null
-minimum_crop_area: null
-reject_clipped_crops: false
-sharpness_filter_enabled: false
-minimum_sharpness: null
+  # Raw sharpness is always measured; no threshold removes a frame unless a
+  # corresponding filter is explicitly enabled/configured.
+  frame_quality:
+    minimum_detection_confidence: null
+    minimum_crop_width: null
+    minimum_crop_height: null
+    minimum_crop_area: null
+    reject_clipped_crops: false
+    sharpness_filter_enabled: false
+    minimum_sharpness: null
 
-# Representative-frame selection is for review/debugging only and never
-# changes a fish grade. References left null simply omit that score factor.
-best_frame_detection_weight: 0.35
-best_frame_area_weight: 0.20
-best_frame_sharpness_weight: 0.25
-best_frame_region_weight: 0.20
-best_frame_area_reference: null
-best_frame_sharpness_reference: null
-best_frame_only_usable: true
-best_frame_clipped_penalty: 0.0
+  # Representative-frame selection is for review/debugging only and never
+  # changes a fish grade. References left null omit that score factor.
+  best_frame:
+    best_frame_detection_weight: 0.35
+    best_frame_area_weight: 0.20
+    best_frame_sharpness_weight: 0.25
+    best_frame_region_weight: 0.20
+    best_frame_area_reference: null
+    best_frame_sharpness_reference: null
+    best_frame_only_usable: true
+    best_frame_clipped_penalty: 0.0
+
+  # Model 2's trained Rejected_* labels participate in normal weighted scores.
+  # A separate override remains inactive unless a validated threshold is set.
+  rejected_override:
+    enabled: false
+    threshold: null
+
+  # HSV is descriptive only until an explicit validated rule exists.
+  hsv_adjustment:
+    enabled: false
+  defect_adjustments_enabled: false
 
 # Save only one selected crop per finalized fish when explicitly enabled.
-save_best_fish_crop: false
-save_annotated_best_fish_crop: false
-best_crop_directory: results/best_fish_crops
-
-# No colour, defect, or structural override is active by default.  Model 2's
-# trained Rejected_* classes participate in the normal weighted score.  Set an
-# explicit validated business threshold here only after it has been approved.
-rejected_override_threshold: null
-color_adjustments_enabled: false
-defect_adjustments_enabled: false
+storage:
+  save_best_fish_crop: false
+  save_annotated_best_fish_crop: false
+  best_crop_directory: results/best_fish_crops

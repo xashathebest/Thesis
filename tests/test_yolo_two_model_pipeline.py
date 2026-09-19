@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from src.api.domain import Detection
+from src.inference.grading_engine import GradingConfig, WeightedGradingEngine
 from src.inference.yolo_fish_detector import YoloFishDetector, resolve_yolo_fish_detector_model_path
 from src.inference.yolo_quality_model import YoloQualityModel, resolve_yolo_quality_model_path, validate_yolo_quality_class_mapping
 from src.preprocessing.audit_v7_exports import SOURCE_CLASSES
@@ -89,6 +90,7 @@ class YoloTwoModelPipelineTests(unittest.TestCase):
         )
         self.assertTrue(detector.load(), detector.error)
         self.assertEqual(detector.class_names, ("item",))
+        self.assertEqual(len(str(detector.diagnostics()["checkpoint_sha256"])), 12)
         frame = np.zeros((35, 45, 3), dtype=np.uint8)
         detections = detector.predict(frame)
         self.assertEqual(detections, [Detection(0, "Fish", 0.92, (0.0, 3.0, 40.0, 30.0), 24)])
@@ -98,6 +100,7 @@ class YoloTwoModelPipelineTests(unittest.TestCase):
     def test_model2_receives_only_a_fish_crop_and_stabilizes_a_track(self) -> None:
         quality = YoloQualityModel(self.quality_path, device="cpu", model_factory=lambda _path: _QualityModel())
         self.assertTrue(quality.load(), quality.error)
+        self.assertEqual(len(str(quality.diagnostics()["checkpoint_sha256"])), 12)
         crop = np.zeros((100, 100, 3), dtype=np.uint8)
         first = quality.predict(crop, 24)
         second = quality.predict(crop, 24)
@@ -112,6 +115,26 @@ class YoloTwoModelPipelineTests(unittest.TestCase):
         self.assertTrue(quality.load(), quality.error)
         result = quality.predict(np.zeros((100, 100, 3), dtype=np.uint8), 1, stabilize=False)
         self.assertEqual(result.quality, "Class A")
+
+    def test_optional_best_crop_saves_only_the_final_selected_candidate(self) -> None:
+        engine = WeightedGradingEngine(
+            GradingConfig(
+                minimum_track_observations=1,
+                save_best_fish_crop=True,
+                best_crop_directory=str(Path(self.directory.name) / "best_crops"),
+            )
+        )
+        quality = YoloQualityModel(self.quality_path, device="cpu", model_factory=lambda _path: _QualityModel(), grading_engine=engine)
+        self.assertTrue(quality.load(), quality.error)
+        crop = np.full((100, 100, 3), 100, dtype=np.uint8)
+        quality.predict(crop, 88, frame_id=1, detection_confidence=.60)
+        quality.predict(crop, 88, frame_id=2, detection_confidence=.90)
+        best = quality.finalize_track(88)
+        self.assertIsNotNone(best)
+        assert best is not None
+        self.assertEqual(best["best_frame_id"], 2)
+        self.assertTrue(Path(str(best["best_crop_path"])).is_file())
+        self.assertEqual(len(list((Path(self.directory.name) / "best_crops").glob("*.jpg"))), 1)
 
     def test_checkpoint_layouts_and_exact_model2_mapping_are_enforced(self) -> None:
         root = Path(self.directory.name)

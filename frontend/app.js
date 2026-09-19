@@ -10,6 +10,7 @@ const elements = {
   feedFps: $("feed-fps"), feedResolution: $("feed-resolution"),
   resultEmpty: $("result-empty"), resultActive: $("result-active"), resultEmptyTitle: $("result-empty-title"), resultEmptyCopy: $("result-empty-copy"),
   decision: $("decision"), resultFish: $("result-fish"), resultLabel: $("result-label"), confidence: $("confidence"), confidenceBar: $("confidence-bar"), resultProcessing: $("result-processing"), resultTime: $("result-time"), latestFeatures: $("latest-feature-list"), classificationPolicy: $("classification-policy"),
+  latestVerdictDetails: $("latest-verdict-details"), latestVerdictStatus: $("latest-verdict-status"), latestVerdictReason: $("latest-verdict-reason"), latestDetectionConfidence: $("latest-detection-confidence"), latestModel2Evidence: $("latest-model2-evidence"), latestCoverage: $("latest-coverage"), latestEffectiveWeights: $("latest-effective-weights"),
   uploadMode: $("upload-mode-button"), closeUpload: $("close-upload-button"), uploadWorkspace: $("upload-workspace"), uploadInput: $("upload-input"), analyze: $("analyze-button"), uploadStatus: $("upload-status"), uploadNote: $("upload-note"), uploadImage: $("upload-result-image"), uploadResults: $("upload-results"), uploadFishCount: $("upload-fish-count"), uploadCountLabel: $("upload-count-label"),
   kpiGrid: $("kpi-grid"), featureCounterGrid: $("feature-counter-grid"), threshold: $("threshold"), openConfidence: $("open-confidence-button"),
   gradeChartEmpty: $("grade-chart-empty"), gradeChart: $("grade-chart"), gradeDonut: $("grade-donut"), gradeTotal: $("grade-total"), gradeLegend: $("grade-legend"),
@@ -17,6 +18,7 @@ const elements = {
   confidenceChartEmpty: $("confidence-chart-empty"), confidenceChart: $("confidence-chart"), averageGradeConfidence: $("average-grade-confidence"),
   recentEmpty: $("recent-empty"), recentWrap: $("recent-table-wrap"), recentHistoryBody: $("recent-history-body"), viewAll: $("view-all-button"),
   historyEmpty: $("history-empty"), historyWrap: $("history-table-wrap"), historyBody: $("history-body"), historySearch: $("history-search"), historyGrade: $("history-grade"), historyFeature: $("history-feature"), historyConfidence: $("history-confidence"), historyFilter: $("history-filter-button"), historyPrev: $("history-prev"), historyNext: $("history-next"), historyPage: $("history-page"),
+  reviewEmpty: $("review-empty"), reviewWrap: $("review-table-wrap"), reviewBody: $("review-body"), reviewPrev: $("review-prev"), reviewNext: $("review-next"), reviewPage: $("review-page"),
   exportButton: $("export-button"), sidebarExport: $("sidebar-export"), exportModal: $("export-modal"), exportForm: $("export-form"), closeExport: $("close-export-button"), cancelExport: $("cancel-export-button"), dateRange: $("date-range"), exportStartDate: $("export-start-date"), exportEndDate: $("export-end-date"),
   settingsButton: $("settings-button"), sidebarSettings: $("sidebar-settings"), settingsDrawer: $("settings-drawer"), closeSettings: $("close-settings-button"), scrim: $("scrim"),
   slider: $("confidence-slider"), settingsThreshold: $("settings-threshold"), confidenceMinus: $("confidence-minus"), confidencePlus: $("confidence-plus"), resetConfidence: $("reset-confidence-button"),
@@ -27,13 +29,14 @@ const elements = {
 };
 
 const overlayControls = {
-  masks: [$("toggle-masks"), $("settings-masks")], fish_ids: [$("toggle-fish-ids"), $("settings-fish-ids")],
+  part_overlays: [$("toggle-part-overlays"), $("settings-part-overlays")], fish_ids: [$("toggle-fish-ids"), $("settings-fish-ids")],
   grades: [$("toggle-grades"), $("settings-grades")], confidence: [$("toggle-confidence"), $("settings-confidence")],
   features: [$("toggle-features"), $("settings-features")], outlines: [$("toggle-outlines"), $("settings-outlines")],
 };
 const viewMeta = {
   live: ["Live Inspection", "Real-time Sardinella Lemuru quality inspection"],
   history: ["Inspection History", "Current-session fish inspection records"],
+  review: ["Review Queue", "Ungraded fish that need an operator decision"],
   model: ["Model", "Local inference availability and operator-safe configuration"],
 };
 const gradeColors = { "Class A": "#49a977", "Class B": "#4388e5", "Class C": "#9464c9", Rejected: "#d55c67", Ungraded: "#a8b5c6" };
@@ -45,10 +48,14 @@ let selectedUpload = null;
 let uploadInFlight = false;
 let selectedView = "live";
 let historyState = { page: 1, totalPages: 1 };
+let reviewState = { page: 1, totalPages: 1 };
 let defaultConfidence = 0.5;
 let defaultQualityConfidence = 0.25;
 let partQualityChart = null;
 let colorTrendChart = null;
+let statusRequestInFlight = false;
+const kpiCards = new Map();
+const featureCards = new Map();
 // Match the shipped Model 2 operating point before the first status refresh.
 elements.qualitySlider.value = "25";
 elements.settingsQualityThreshold.textContent = "25%";
@@ -144,7 +151,7 @@ function renderCamera(data) {
 
 function analysisFor(event) { return event?.analysis && typeof event.analysis === "object" ? event.analysis : {}; }
 function partLabel(grade) { return String(grade || "Unknown").replace("Class ", ""); }
-function latestFeatureRows(event) {
+function legacyLatestFeatureRows(event) {
   const parts = analysisFor(event).part_results || {};
   return ["Body", "Head", "Tail"].map((region) => {
     const part = parts[region] || {}; const present = part.present === true;
@@ -153,7 +160,7 @@ function latestFeatureRows(event) {
     return [region, present ? `${partLabel(part.grade)} ${confidence}${weight}` : "Not observed (not marked missing)", present ? "detected" : "unmeasured"];
   });
 }
-function appendFullAnalysis(container, event) {
+function legacyAppendFullAnalysis(container, event) {
   const analysis = analysisFor(event); if (!Object.keys(analysis).length) return;
   const details = document.createElement("details"); details.className = "full-analysis";
   const summary = document.createElement("summary"); summary.textContent = "View full analysis"; details.append(summary);
@@ -176,7 +183,7 @@ function appendFullAnalysis(container, event) {
   (analysis.explanation || []).forEach((text) => { const line = document.createElement("p"); line.textContent = String(text); body.append(line); });
   details.append(body); container.append(details);
 }
-function renderLatest(data) {
+function legacyRenderLatestOld(data) {
   const event = data.latest_event;
   elements.resultEmpty.classList.toggle("hidden", Boolean(event));
   elements.resultActive.classList.toggle("hidden", !event);
@@ -201,31 +208,232 @@ function renderLatest(data) {
   elements.classificationPolicy.textContent = event.quality ? `Grade is weighted from Model 2 Head/Body/Tail evidence (${analysis.evidence_completeness || "unknown"} evidence); Model 1 confidence remains traceability only.` : "No final grade yet: retained Model 2 evidence is incomplete or awaiting temporal confirmation.";
 }
 
+// Evidence-aware verdict helpers. Values in persisted records are fractions; the
+// fallback also accepts legacy percentage fields so old sessions remain readable.
+const MANUAL_GRADE_CHOICES = ["A", "B", "C", "Rejected"];
+function finiteNumber(value) { const number = Number(value); return Number.isFinite(number) ? number : null; }
+function asFraction(value) { const number = finiteNumber(value); return number == null ? null : Math.abs(number) > 1 ? number / 100 : number; }
+function scoreText(value) { const fraction = asFraction(value); return fraction == null ? "-" : formatPercent(fraction * 100); }
+function eventValue(event, ...keys) {
+  const topLevel = event && typeof event === "object" ? event : {}; const analysis = analysisFor(event);
+  for (const source of [topLevel, analysis]) for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(source, key) && source[key] !== null && source[key] !== undefined && source[key] !== "") return source[key];
+  }
+  return undefined;
+}
+function model1Confidence(event) { const model1 = analysisFor(event).model1_detection; return model1 && typeof model1 === "object" && model1.confidence != null ? model1.confidence : eventValue(event, "model1_detection_confidence", "detection_confidence", "final_confidence", "confidence_percent"); }
+function weightedFinalSupport(event) { return eventValue(event, "final_score", "provisional_score", "best_evidence_score", "quality_confidence"); }
+function model2BestEvidence(event) { return { grade: eventValue(event, "best_evidence_class", "provisional_grade", "quality"), score: eventValue(event, "best_evidence_score", "provisional_score", "quality_confidence") }; }
+function aiFinalGrade(event) { return String(eventValue(event, "ai_final_grade", "final_grade", "quality") || "Ungraded"); }
+function manualGrade(event) { return eventValue(event, "manual_grade"); }
+function verdictStatus(event) { return String(eventValue(event, "verdict_status") || "NOT_AVAILABLE").toUpperCase(); }
+function readableVerdictStatus(value) {
+  const labels = { AUTO_GRADED: "Automatically graded", NEEDS_REVIEW: "Needs review", NOT_AVAILABLE: "Verdict status unavailable" };
+  return labels[String(value || "").toUpperCase()] || titleCase(value);
+}
+function verdictReason(event) { return { code: eventValue(event, "verdict_reason_code"), text: eventValue(event, "verdict_reason_text") }; }
+function needsReview(event) { return verdictStatus(event) === "NEEDS_REVIEW"; }
+function observedRegions(event) {
+  const stored = eventValue(event, "observed_regions");
+  if (Array.isArray(stored)) return stored.map((region) => titleCase(region)).filter(Boolean);
+  if (typeof stored === "string" && stored.trim()) return stored.split(",").map((region) => titleCase(region.trim())).filter(Boolean);
+  const parts = analysisFor(event).part_results || {};
+  return ["Body", "Head", "Tail"].filter((region) => parts[region]?.present === true);
+}
+function coverageText(event) { return scoreText(eventValue(event, "coverage_percentage", "original_weight_coverage", "coverage")); }
+function effectiveWeightText(event) {
+  const weights = eventValue(event, "effective_weights");
+  if (!weights || typeof weights !== "object" || Array.isArray(weights)) return "-";
+  const entries = Object.entries(weights).filter(([, value]) => asFraction(value) != null && asFraction(value) > 0);
+  return entries.length ? entries.map(([region, weight]) => `${titleCase(region)} ${scoreText(weight)}`).join("; ") : "-";
+}
+function partFor(event, region) {
+  const parts = analysisFor(event).part_results;
+  return parts && typeof parts === "object" ? (parts[region] || parts[region.toLowerCase()] || {}) : {};
+}
+function partStatus(part) {
+  if (part && part.status) return titleCase(part.status);
+  return part?.present ? "Observed" : "Unknown / not observed";
+}
+function partContribution(part, grade) {
+  const contributions = part?.contributions;
+  return contributions && typeof contributions === "object" ? contributions[grade] : undefined;
+}
+function topStatistics(part) {
+  const temporal = part?.temporal_statistics;
+  return temporal && typeof temporal === "object" && temporal.top_grade_statistics && typeof temporal.top_grade_statistics === "object" ? temporal.top_grade_statistics : {};
+}
+function latestFeatureRows(event) {
+  return ["Body", "Head", "Tail"].map((region) => {
+    const part = partFor(event, region); const grade = part.grade; const stats = topStatistics(part);
+    if (!part.present) return [region, `${partStatus(part)} (not marked physically missing)`, "unmeasured"];
+    const pieces = [`${partLabel(grade)} evidence ${scoreText(part.grade_confidence)}`, `original ${scoreText(part.original_weight ?? part.weight)}`, `effective ${scoreText(part.effective_weight ?? part.normalized_weight)}`];
+    const contribution = partContribution(part, eventValue(event, "provisional_grade", "best_evidence_class"));
+    if (contribution != null) pieces.push(`contribution ${scoreText(contribution)}`);
+    if (stats.number_of_valid_observations != null) pieces.push(`${stats.number_of_valid_observations} frames`);
+    return [region, pieces.join(" | "), "detected"];
+  });
+}
+function addAnalysisDatum(grid, label, value) {
+  const item = document.createElement("span"); const name = document.createElement("small"); const detail = document.createElement("b");
+  name.textContent = label; detail.textContent = value == null || value === "" ? "-" : String(value); item.append(name, detail); grid.append(item);
+}
+function appendAnalysisBlock(body, heading, build) {
+  const block = document.createElement("section"); block.className = "analysis-block"; const title = document.createElement("h3"); title.textContent = heading; block.append(title); build(block); body.append(block);
+}
+function appendFullAnalysis(container, event) {
+  if (!event) return;
+  const analysis = analysisFor(event); const details = document.createElement("details"); details.className = "full-analysis";
+  const summary = document.createElement("summary"); summary.textContent = "Why this verdict and full analysis"; details.append(summary);
+  const body = document.createElement("div"); body.className = "full-analysis-body";
+  const aiGrade = aiFinalGrade(event); const support = weightedFinalSupport(event); const evidence = model2BestEvidence(event); const manual = manualGrade(event); const reason = verdictReason(event);
+  appendAnalysisBlock(body, "Final verdict", (block) => {
+    const grid = document.createElement("div"); grid.className = "analysis-data-grid";
+    addAnalysisDatum(grid, "Original AI verdict", aiGrade); addAnalysisDatum(grid, "Weighted final support", scoreText(support)); addAnalysisDatum(grid, "Verdict status", readableVerdictStatus(verdictStatus(event))); addAnalysisDatum(grid, "Reason code", reason.code || "-");
+    if (manual) addAnalysisDatum(grid, "Manual final grade", manual); block.append(grid);
+    if (reason.text) { const text = document.createElement("p"); text.textContent = reason.text; block.append(text); }
+  });
+  appendAnalysisBlock(body, "Evidence coverage", (block) => {
+    const grid = document.createElement("div"); grid.className = "analysis-data-grid";
+    const observed = observedRegions(event); addAnalysisDatum(grid, "Observed regions", observed.length ? observed.join(" / ") : "None"); addAnalysisDatum(grid, "Original coverage", coverageText(event)); addAnalysisDatum(grid, "Effective calculation", effectiveWeightText(event)); addAnalysisDatum(grid, "Usable Model 2 frames", eventValue(event, "observation_count") ?? "-"); block.append(grid);
+  });
+  appendAnalysisBlock(body, "Confidence concepts", (block) => {
+    const grid = document.createElement("div"); grid.className = "analysis-data-grid";
+    addAnalysisDatum(grid, "Model 1 detection confidence", scoreText(model1Confidence(event))); addAnalysisDatum(grid, "Model 2 best evidence", `${evidence.grade || "-"} ${scoreText(evidence.score)}`); addAnalysisDatum(grid, "Final weighted support", scoreText(support)); addAnalysisDatum(grid, "Best evidence class", evidence.grade || "-"); block.append(grid);
+  });
+  appendAnalysisBlock(body, "Part analysis", (block) => {
+    ["Body", "Head", "Tail"].forEach((region) => {
+      const part = partFor(event, region); const stats = topStatistics(part); const contribution = partContribution(part, analysis.provisional_grade || analysis.best_evidence_class);
+      const line = document.createElement("p");
+      if (!part.present) line.textContent = `${region}: ${partStatus(part)}. This is not a physical missing-part claim.`;
+      else line.textContent = `${region}: ${part.grade || "-"} evidence ${scoreText(part.grade_confidence)}; original weight ${scoreText(part.original_weight ?? part.weight)}; effective weight ${scoreText(part.effective_weight ?? part.normalized_weight)}; contribution ${scoreText(contribution)}; observations ${stats.number_of_valid_observations ?? "-"}; mean ${scoreText(stats.mean_confidence)}; max ${scoreText(stats.max_confidence)}; standard deviation ${scoreText(stats.standard_deviation)}.`;
+      block.append(line);
+    });
+  });
+  appendAnalysisBlock(body, "All weighted scores", (block) => {
+    const scores = analysis.weighted_scores && typeof analysis.weighted_scores === "object" ? analysis.weighted_scores : {};
+    const grid = document.createElement("div"); grid.className = "analysis-data-grid";
+    ["Class A", "Class B", "Class C", "Rejected"].forEach((grade) => addAnalysisDatum(grid, grade, scoreText(scores[grade]))); block.append(grid);
+  });
+  const inferenceDebug = analysis.inference_debug;
+  if (inferenceDebug && typeof inferenceDebug === "object") appendAnalysisBlock(body, "Inference debug", (block) => {
+    const model1 = inferenceDebug.model1_detection || {}; const decision = inferenceDebug.final_decision || {};
+    const grid = document.createElement("div"); grid.className = "analysis-data-grid";
+    const crop = inferenceDebug.fish_crop_dimensions || {};
+    addAnalysisDatum(grid, "Model 1 detection", `Fish #${model1.fish_id ?? event.track_id ?? "-"} ${scoreText(model1.confidence)}`);
+    addAnalysisDatum(grid, "Fish crop", crop.width && crop.height ? `${crop.width} x ${crop.height}` : "-");
+    addAnalysisDatum(grid, "Model 2 detections", Array.isArray(inferenceDebug.model2_detections) ? inferenceDebug.model2_detections.length : 0);
+    addAnalysisDatum(grid, "Final decision", `${decision.grade || "Ungraded"} ${scoreText(decision.support ?? decision.best_evidence_support)}`);
+    block.append(grid);
+    if (Array.isArray(inferenceDebug.model2_detections) && inferenceDebug.model2_detections.length) {
+      const line = document.createElement("p");
+      line.textContent = inferenceDebug.model2_detections.map((item) => `${item.region}: ${item.grade} ${scoreText(item.evidence_score)}`).join(" | ");
+      block.append(line);
+    }
+  });
+  const stability = analysis.temporal_stability;
+  if (stability && typeof stability === "object") appendAnalysisBlock(body, "Temporal stability", (block) => {
+    const grid = document.createElement("div"); grid.className = "analysis-data-grid"; addAnalysisDatum(grid, "Ready", stability.ready === true ? "Yes" : stability.ready === false ? "No" : "-"); addAnalysisDatum(grid, "Usable frames", stability.usable_frame_count ?? "-"); addAnalysisDatum(grid, "Candidate frames", stability.candidate_frame_count ?? "-"); addAnalysisDatum(grid, "Winning-grade std. dev.", scoreText(stability.winning_grade_max_standard_deviation)); block.append(grid);
+  });
+  const bestFrame = analysis.best_frame;
+  if (bestFrame && typeof bestFrame === "object") appendAnalysisBlock(body, "Best representative frame", (block) => {
+    const grid = document.createElement("div"); grid.className = "analysis-data-grid"; addAnalysisDatum(grid, "Frame", bestFrame.best_frame_id ?? bestFrame.frame_id ?? bestFrame.id ?? "-"); addAnalysisDatum(grid, "Frame score", scoreText(bestFrame.best_frame_score ?? bestFrame.score)); addAnalysisDatum(grid, "Sharpness", bestFrame.frame_quality?.sharpness_score ?? bestFrame.sharpness_score ?? "-"); addAnalysisDatum(grid, "Crop", bestFrame.best_crop_path || "Not saved"); block.append(grid);
+  });
+  const whole = analysis.color?.["Whole Fish"] || {};
+  appendAnalysisBlock(body, "Color metrics", (block) => {
+    const text = document.createElement("p"); text.textContent = whole.status === "measured" ? `Whole-fish HSV: hue ${Number(whole.mean_hue_deg).toFixed(1)} degrees; saturation ${scoreText(whole.mean_saturation)}; yellow proxy ${scoreText(whole.yellow_ratio_proxy)}. Classification effect: none; no validated HSV rule is active.` : "HSV measurement unavailable for this fish. Classification effect: none."; block.append(text);
+  });
+  (analysis.explanation || []).forEach((text) => { const line = document.createElement("p"); line.textContent = String(text); body.append(line); });
+  details.append(body); container.append(details);
+}
+function renderLatest(data) {
+  const event = data.current_detection || data.latest_event; const hasEvent = Boolean(event); const liveTrack = Boolean(event?.live_track); const status = verdictStatus(event); const manual = manualGrade(event); const aiGrade = aiFinalGrade(event); const support = weightedFinalSupport(event); const evidence = model2BestEvidence(event); const reason = verdictReason(event);
+  elements.resultEmpty.classList.toggle("hidden", hasEvent); elements.resultActive.classList.toggle("hidden", !hasEvent); elements.latestVerdictDetails.classList.toggle("hidden", !hasEvent);
+  elements.decision.className = `decision ${hasEvent ? (needsReview(event) ? "warning" : "healthy") : "neutral"}`; elements.decision.textContent = hasEvent ? (liveTrack ? "LIVE FISH" : readableVerdictStatus(status).toUpperCase()) : "WAITING";
+  elements.latestFeatures.replaceChildren(); latestFeatureRows(event).forEach(([label, value, className]) => { const row = document.createElement("div"); row.className = "feature-row"; const name = document.createElement("span"); name.textContent = label; const valueElement = document.createElement("b"); valueElement.textContent = value; valueElement.classList.add(className); row.append(name, valueElement); elements.latestFeatures.append(row); });
+  appendFullAnalysis(elements.latestFeatures, event);
+  if (!hasEvent) { elements.classificationPolicy.textContent = "Model 1 detection, Model 2 evidence, and final weighted support are reported separately."; return; }
+  elements.resultFish.textContent = event.fish_label || `Fish #${event.track_id}`; elements.resultLabel.textContent = manual ? `Manual: ${manual}` : aiGrade; const verdictLabel = elements.resultLabel.closest(".grade-readout")?.querySelector("span"); if (verdictLabel) verdictLabel.textContent = liveTrack ? "LIVE VERDICT" : "FINAL VERDICT";
+  elements.confidence.textContent = scoreText(support); elements.confidenceBar.style.width = `${Math.max(0, Math.min(100, (asFraction(support) || 0) * 100))}%`;
+  const confidenceLabel = elements.confidence.closest("div")?.querySelector("dt"); if (confidenceLabel) confidenceLabel.textContent = "Weighted final support";
+  elements.resultProcessing.textContent = formatMs(event.processing_time_ms); elements.resultTime.textContent = liveTrack ? "Live track" : formatTime(event.timestamp);
+  elements.latestVerdictStatus.textContent = manual ? "Manual final grade recorded" : readableVerdictStatus(status); elements.latestVerdictReason.textContent = reason.text || (needsReview(event) ? "The AI did not meet the configured final-verdict acceptance rules." : "No structured verdict reason was supplied.");
+  elements.latestDetectionConfidence.textContent = scoreText(model1Confidence(event)); elements.latestModel2Evidence.textContent = `${evidence.grade || "-"} ${scoreText(evidence.score)}`; elements.latestCoverage.textContent = `${coverageText(event)} (${observedRegions(event).join(" / ") || "no regions"})`; elements.latestEffectiveWeights.textContent = effectiveWeightText(event);
+  elements.classificationPolicy.textContent = manual ? `Manual final grade: ${manual}. Original AI verdict remains ${aiGrade}; Model 1 detection and Model 2 evidence are retained separately.` : needsReview(event) ? "This is not a Rejected fish. The AI does not have enough reliable evidence for an automatic final grade." : "Model 1 detection, Model 2 evidence, and final weighted support are separate measurements.";
+}
+
 function kpiCard(label, value, note, emphasis = false) {
-  const card = document.createElement("article"); card.className = `kpi-card${emphasis ? " emphasis" : ""}`;
-  const labelEl = document.createElement("span"); labelEl.className = "kpi-label"; labelEl.append(document.createElement("i"), document.createTextNode(label));
-  const valueEl = document.createElement("strong"); valueEl.textContent = String(value);
-  const noteEl = document.createElement("small"); noteEl.textContent = note;
-  card.append(labelEl, valueEl, noteEl); return card;
+  let record = kpiCards.get(label);
+  if (!record) {
+    const card = document.createElement("article");
+    const labelEl = document.createElement("span"); labelEl.className = "kpi-label"; labelEl.append(document.createElement("i"), document.createTextNode(label));
+    const valueEl = document.createElement("strong");
+    const noteEl = document.createElement("small");
+    card.append(labelEl, valueEl, noteEl);
+    record = { card, valueEl, noteEl };
+    kpiCards.set(label, record);
+  }
+  record.card.className = `kpi-card${emphasis ? " emphasis" : ""}`;
+  const nextValue = String(value);
+  if (record.valueEl.textContent !== nextValue) record.valueEl.textContent = nextValue;
+  if (record.noteEl.textContent !== note) record.noteEl.textContent = note;
+  return record.card;
+}
+
+function reconcileCards(container, cache, cards, makeCard) {
+  const wanted = new Set(cards.map(([name]) => name));
+  for (const [name, record] of cache) {
+    if (!wanted.has(name)) {
+      record.card.remove();
+      cache.delete(name);
+    }
+  }
+  cards.forEach((cardData, index) => {
+    const card = makeCard(cardData);
+    if (container.children[index] !== card) container.insertBefore(card, container.children[index] || null);
+  });
 }
 function renderKpis(data) {
   const counters = data.counters || {}; const grades = data.quality_counters || {}; const total = Number(counters.total || 0);
   const percentage = (name) => total ? `${((Number(grades[name] || 0) / total) * 100).toFixed(1)}% of inspected fish` : "No fish this session";
+  const accepted = Number(grades["Class A"] || 0) + Number(grades["Class B"] || 0) + Number(grades["Class C"] || 0);
+  const rejected = Number(grades.Rejected || 0); const live = data.current_detection || data.latest_event;
+  const liveGrade = live ? (aiFinalGrade(live) || "Ungraded") : "-";
+  const averageSupport = data.analytics?.average_final_support ?? data.analytics?.average_best_evidence_support;
   const cards = [["Total fish", total, "Current session", true]];
-  Object.entries(grades).forEach(([name, count]) => cards.push([name, count || 0, percentage(name)]));
-  cards.push(["Active fish", data.active_fish_count || 0, "Live tracks"], ["Inspection rate", `${Number(data.fps || 0).toFixed(1)}`, "Frames per second"]);
-  elements.kpiGrid.replaceChildren(...cards.map(([label, value, note, emphasis]) => kpiCard(label, value, note, Boolean(emphasis))));
+  Object.entries(grades).forEach(([name, count]) => cards.push([name.replace("Class ", "Grade "), count || 0, percentage(name)]));
+  cards.push(
+    ["Acceptance rate", total ? `${((accepted / total) * 100).toFixed(1)}%` : "-", "Grade A, B, or C final verdicts"],
+    ["Rejection rate", total ? `${((rejected / total) * 100).toFixed(1)}%` : "-", "Real Rejected-class verdicts"],
+    ["Active fish", data.active_fish_count || 0, "Live tracks"],
+    ["Inspection FPS", `${Number(data.fps || 0).toFixed(1)}`, "Frames per second"],
+    ["Current fish ID", live ? `Fish #${live.track_id}` : "-", live?.live_track ? "Current Model 1 track" : "No active track"],
+    ["Current final grade", liveGrade, live?.live_track ? "Current Model 2 evidence" : "Latest completed fish"],
+    ["Average confidence", averageSupport == null ? "-" : formatPercent(averageSupport), "Average weighted support"]
+  );
+  reconcileCards(elements.kpiGrid, kpiCards, cards, ([label, value, note, emphasis]) => kpiCard(label, value, note, Boolean(emphasis)));
   elements.threshold.textContent = formatPercent(Number(data.detection_confidence_threshold) * 100);
 }
 
 function renderFeatureCounters(data) {
-  elements.featureCounterGrid.replaceChildren();
-  Object.entries(data.feature_counters || {}).forEach(([name, detail]) => {
-    const card = document.createElement("article"); card.className = `feature-counter${detail.available ? "" : " unavailable"}`;
-    const title = document.createElement("span"); title.textContent = name;
-    const value = document.createElement("strong"); value.textContent = detail.available ? String(detail.count || 0) : "Not measured";
-    const note = document.createElement("small"); note.textContent = detail.source;
-    card.append(title, value, note); elements.featureCounterGrid.append(card);
+  const counters = Object.entries(data.feature_counters || {});
+  reconcileCards(elements.featureCounterGrid, featureCards, counters, ([name, detail]) => {
+    let record = featureCards.get(name);
+    if (!record) {
+      const card = document.createElement("article");
+      const title = document.createElement("span"); title.textContent = name;
+      const value = document.createElement("strong");
+      const note = document.createElement("small");
+      card.append(title, value, note);
+      record = { card, value, note };
+      featureCards.set(name, record);
+    }
+    record.card.className = `feature-counter${detail.available ? "" : " unavailable"}`;
+    const valueText = detail.available ? String(detail.count || 0) : "Not measured";
+    if (record.value.textContent !== valueText) record.value.textContent = valueText;
+    const noteText = String(detail.source || "");
+    if (record.note.textContent !== noteText) record.note.textContent = noteText;
+    return record.card;
   });
 }
 
@@ -273,7 +481,7 @@ function detectedFeatures(event) {
   const regions = [...new Set((event?.parts || []).map((part) => part.region).filter(Boolean))];
   return regions.length ? regions.join(", ") : "No Model 2 regions";
 }
-function openHistoryAnalysis(event) {
+function legacyOpenHistoryAnalysis(event) {
   let dialog = $("history-analysis-dialog");
   if (!dialog) { dialog = document.createElement("dialog"); dialog.id = "history-analysis-dialog"; dialog.className = "history-analysis-dialog"; document.body.append(dialog); }
   dialog.replaceChildren(); const close = document.createElement("button"); close.className = "icon-button"; close.type = "button"; close.textContent = "×"; close.addEventListener("click", () => dialog.close());
@@ -289,6 +497,39 @@ function renderRecent(history) {
     const confidence = event.quality_confidence == null ? event.confidence_percent : Number(event.quality_confidence) * 100;
     const row = document.createElement("tr"); row.append(historyCell(event.fish_label), historyCell(formatTime(event.timestamp)), historyCell(event.quality || "Ungraded", "grade-cell"), historyCell(formatPercent(confidence)), historyCell(detectedFeatures(event), "status-note"), historyCell(formatMs(event.processing_time_ms))); elements.recentHistoryBody.append(row);
   });
+}
+
+function manualChoiceForDisplay(value) { return String(value || "").replace(/^Class\s+/i, ""); }
+function appendManualReviewPanel(container, event) {
+  const currentManual = manualGrade(event); if (!needsReview(event) && !currentManual) return;
+  const panel = document.createElement("section"); panel.className = "manual-review-panel";
+  const heading = document.createElement("h3"); heading.textContent = "Manual review"; const original = document.createElement("p");
+  original.textContent = `Original AI verdict: ${aiFinalGrade(event)}. Weighted final support: ${scoreText(weightedFinalSupport(event))}. This evidence is retained when a manual grade is recorded.`;
+  const controls = document.createElement("div"); controls.className = "manual-review-controls"; const label = document.createElement("label"); label.textContent = "Manual final grade";
+  const select = document.createElement("select"); select.setAttribute("aria-label", "Manual final grade"); const empty = document.createElement("option"); empty.value = ""; empty.textContent = "Select an operator grade"; select.append(empty);
+  MANUAL_GRADE_CHOICES.forEach((grade) => { const option = document.createElement("option"); option.value = grade; option.textContent = grade === "Rejected" ? "Rejected" : `Class ${grade}`; option.selected = manualChoiceForDisplay(currentManual) === grade; select.append(option); });
+  label.append(select); const save = document.createElement("button"); save.type = "button"; save.className = "button primary"; save.textContent = currentManual ? "Update manual grade" : "Record manual grade"; save.disabled = !select.value;
+  const message = document.createElement("p"); message.className = "manual-review-message"; if (currentManual) message.textContent = `Manual final grade currently recorded as ${currentManual}.`;
+  select.addEventListener("change", () => { save.disabled = !select.value; message.textContent = ""; message.classList.remove("error"); });
+  save.addEventListener("click", () => submitManualReview(event, select.value, save, message)); controls.append(label, save); panel.append(heading, original, controls, message); container.append(panel);
+}
+async function submitManualReview(event, selectedGrade, button, message) {
+  if (!selectedGrade || event?.track_id == null) return;
+  button.disabled = true; message.classList.remove("error"); message.textContent = "Saving manual final grade...";
+  try {
+    const response = await fetch(`/api/reviews/${encodeURIComponent(String(event.track_id))}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ manual_grade: selectedGrade }) });
+    const payload = await response.json().catch(() => ({})); if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
+    const updated = payload.item && typeof payload.item === "object" ? payload.item : null;
+    message.textContent = "Manual final grade saved. The original AI verdict is unchanged.";
+    if (updated) openHistoryAnalysis(updated); await getStatus(); await loadHistory(); await loadReviewQueue();
+  } catch (error) { message.classList.add("error"); message.textContent = error instanceof Error ? error.message : "Manual review could not be saved."; button.disabled = false; }
+}
+function openHistoryAnalysis(event) {
+  let dialog = $("history-analysis-dialog");
+  if (!dialog) { dialog = document.createElement("dialog"); dialog.id = "history-analysis-dialog"; dialog.className = "history-analysis-dialog"; document.body.append(dialog); }
+  dialog.replaceChildren(); const close = document.createElement("button"); close.className = "icon-button"; close.type = "button"; close.textContent = "x"; close.setAttribute("aria-label", "Close analysis"); close.addEventListener("click", () => dialog.close());
+  const title = document.createElement("h2"); title.textContent = `${event.fish_label || `Fish #${event.track_id}`} full analysis`; const content = document.createElement("div"); appendFullAnalysis(content, event); content.querySelector("details")?.setAttribute("open", ""); appendManualReviewPanel(content, event); dialog.append(close, title, content);
+  if (typeof dialog.showModal === "function") dialog.showModal(); else dialog.setAttribute("open", "");
 }
 
 function renderModel(data) {
@@ -309,6 +550,7 @@ function syncSettings(data) {
 function render(data) {
   latestStatus = data; defaultConfidence = Number(data.default_confidence_threshold ?? defaultConfidence); defaultQualityConfidence = Number(data.default_quality_confidence_threshold ?? defaultQualityConfidence); renderAlert(data); renderCamera(data); renderLatest(data); renderKpis(data); renderFeatureCounters(data); renderAnalytics(data.analytics); renderRecent(data.recent_history); renderModel(data); syncSettings(data);
   if (selectedView === "history") loadHistory();
+  else if (selectedView === "review") loadReviewQueue();
 }
 
 function renderBackendUnavailable() {
@@ -316,8 +558,18 @@ function renderBackendUnavailable() {
   [elements.start, elements.emptyStart, elements.stop, elements.reset, elements.analyze].forEach((button) => { button.disabled = true; });
 }
 async function getStatus() {
-  try { const response = await fetch("/api/status", { cache: "no-store" }); if (!response.ok) throw new Error(`HTTP ${response.status}`); render(await response.json()); }
-  catch (_) { renderBackendUnavailable(); }
+  // A slow response must never overtake the next poll and redraw stale UI.
+  if (statusRequestInFlight) return;
+  statusRequestInFlight = true;
+  try {
+    const response = await fetch("/api/status", { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    render(await response.json());
+  } catch (_) {
+    renderBackendUnavailable();
+  } finally {
+    statusRequestInFlight = false;
+  }
 }
 async function postControl(path) {
   [elements.start, elements.emptyStart, elements.stop, elements.reset].forEach((button) => { button.disabled = true; });
@@ -335,6 +587,7 @@ function showView(view) {
   const [title, subtitle] = viewMeta[view]; elements.pageTitle.textContent = title; elements.pageSubtitle.textContent = subtitle;
   document.querySelectorAll(".nav-item[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   if (view === "history") loadHistory(true);
+  if (view === "review") loadReviewQueue(true);
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 function openSettings() { elements.settingsDrawer.classList.add("open"); elements.settingsDrawer.setAttribute("aria-hidden", "false"); elements.scrim.classList.remove("hidden"); }
@@ -342,7 +595,7 @@ function closeSettings() { elements.settingsDrawer.classList.remove("open"); ele
 function openExport() { elements.exportModal.classList.remove("hidden"); elements.scrim.classList.remove("hidden"); }
 function closeExport() { elements.exportModal.classList.add("hidden"); if (!elements.settingsDrawer.classList.contains("open")) elements.scrim.classList.add("hidden"); }
 
-async function loadHistory(resetPage = false) {
+async function legacyLoadHistoryOld(resetPage = false) {
   if (resetPage) historyState.page = 1;
   const query = new URLSearchParams({ page: String(historyState.page), page_size: "25" });
   if (elements.historySearch.value.trim()) query.set("search", elements.historySearch.value.trim());
@@ -355,6 +608,66 @@ async function loadHistory(resetPage = false) {
     const rows = data.items || []; elements.historyEmpty.classList.toggle("hidden", rows.length > 0); elements.historyWrap.classList.toggle("hidden", rows.length === 0); elements.historyBody.replaceChildren();
     rows.forEach((event) => { const confidence = event.quality_confidence == null ? event.confidence_percent : Number(event.quality_confidence) * 100; const parts = event.parts || []; const regions = [...new Set(parts.map((part) => part.region).filter(Boolean))].join(", ") || "—"; const classes = [...new Set(parts.map((part) => part.source_class_name).filter(Boolean))].join(", ") || "—"; const row = document.createElement("tr"); const fish = historyCell(event.fish_label); fish.tabIndex = 0; fish.title = "Open full analysis"; fish.classList.add("history-open"); fish.addEventListener("click", () => openHistoryAnalysis(event)); fish.addEventListener("keydown", (key) => { if (key.key === "Enter") openHistoryAnalysis(event); }); row.append(fish, historyCell(formatTime(event.timestamp)), historyCell(event.quality || "Ungraded", "grade-cell"), historyCell(formatPercent(confidence)), historyCell(formatPercent(event.confidence_percent)), historyCell(regions, "status-note"), historyCell(classes, "status-note"), historyCell(formatMs(event.processing_time_ms))); elements.historyBody.append(row); });
   } catch (error) { elements.historyEmpty.textContent = error instanceof Error ? error.message : "History unavailable."; elements.historyEmpty.classList.remove("hidden"); elements.historyWrap.classList.add("hidden"); }
+}
+
+function ensureHistoryVerdictFilter() {
+  const filters = elements.historyFilter?.parentElement; if (!filters) return;
+  if (!$("history-verdict-status")) {
+    const label = document.createElement("label"); label.textContent = "Verdict status"; const select = document.createElement("select"); select.id = "history-verdict-status";
+    [["", "All verdicts"], ["NEEDS_REVIEW", "Needs review"]].forEach(([value, text]) => { const option = document.createElement("option"); option.value = value; option.textContent = text; select.append(option); });
+    label.append(select); filters.insertBefore(label, elements.historyFilter);
+  }
+  elements.historyVerdict = $("history-verdict-status");
+  const header = elements.historyBody?.closest("table")?.querySelector("thead tr");
+  if (header && !header.dataset.verdictColumns) {
+    header.dataset.verdictColumns = "true"; header.replaceChildren(); ["Fish ID", "Timestamp", "Original AI verdict", "Weighted support", "Model 1 detection", "Model 2 best evidence", "Coverage", "Verdict status", "Reason", "Manual final", "Processing"].forEach((name) => { const cell = document.createElement("th"); cell.textContent = name; header.append(cell); });
+  }
+}
+function renderHistoryRows(rows) {
+  elements.historyBody.replaceChildren();
+  rows.forEach((event) => {
+    const evidence = model2BestEvidence(event); const reason = verdictReason(event); const row = document.createElement("tr"); const fish = historyCell(event.fish_label || `Fish #${event.track_id}`); fish.tabIndex = 0; fish.title = "Open full analysis"; fish.classList.add("history-open"); fish.addEventListener("click", () => openHistoryAnalysis(event)); fish.addEventListener("keydown", (key) => { if (key.key === "Enter" || key.key === " ") { key.preventDefault(); openHistoryAnalysis(event); } });
+    row.append(fish, historyCell(formatTime(event.timestamp)), historyCell(aiFinalGrade(event), "grade-cell"), historyCell(scoreText(weightedFinalSupport(event))), historyCell(scoreText(model1Confidence(event))), historyCell(`${evidence.grade || "-"} ${scoreText(evidence.score)}`, "status-note"), historyCell(coverageText(event)), historyCell(readableVerdictStatus(verdictStatus(event)), needsReview(event) ? "review-status" : "status-note"), historyCell(reason.text || reason.code || "-", "status-note"), historyCell(manualGrade(event) || "-", manualGrade(event) ? "manual-grade" : "status-note"), historyCell(formatMs(event.processing_time_ms)));
+    elements.historyBody.append(row);
+  });
+}
+function reviewFilterMatches(event) {
+  const search = elements.historySearch?.value.trim().replace(/fish|#/gi, "").trim(); if (search && !String(event.track_id ?? "").includes(search)) return false;
+  const grade = elements.historyGrade?.value; if (grade && aiFinalGrade(event).toLowerCase() !== grade.toLowerCase()) return false;
+  const feature = elements.historyFeature?.value; if (feature && !observedRegions(event).some((region) => region.toLowerCase() === feature.toLowerCase())) return false;
+  const minimum = finiteNumber(elements.historyConfidence?.value); return minimum == null || (asFraction(weightedFinalSupport(event)) || 0) * 100 >= minimum;
+}
+function setHistoryPageState(state, total, itemCount) {
+  state.totalPages = Math.max(1, Math.ceil(total / 25)); state.page = Math.min(Math.max(1, state.page), state.totalPages); elements.historyPage.textContent = `Page ${state.page} of ${state.totalPages}`; elements.historyPrev.disabled = state.page <= 1; elements.historyNext.disabled = state.page >= state.totalPages; return itemCount;
+}
+async function loadHistory(resetPage = false) {
+  ensureHistoryVerdictFilter(); if (resetPage) historyState.page = 1;
+  try {
+    if (elements.historyVerdict?.value === "NEEDS_REVIEW") {
+      const response = await fetch("/api/reviews?include_reviewed=true"); const data = await response.json(); if (!response.ok) throw new Error(data.detail || "Review filter unavailable");
+      const filtered = (data.items || []).filter(reviewFilterMatches); const total = filtered.length; setHistoryPageState(historyState, total, total); const pageItems = filtered.slice((historyState.page - 1) * 25, historyState.page * 25);
+      elements.historyEmpty.classList.toggle("hidden", pageItems.length > 0); elements.historyWrap.classList.toggle("hidden", pageItems.length === 0); renderHistoryRows(pageItems); return;
+    }
+    const query = new URLSearchParams({ page: String(historyState.page), page_size: "25" }); if (elements.historySearch.value.trim()) query.set("search", elements.historySearch.value.trim()); if (elements.historyGrade.value) query.set("grade", elements.historyGrade.value); if (elements.historyFeature.value) query.set("feature", elements.historyFeature.value); if (elements.historyConfidence.value) query.set("min_confidence", elements.historyConfidence.value);
+    const response = await fetch(`/api/history?${query}`); const data = await response.json(); if (!response.ok) throw new Error(data.detail || "History unavailable"); historyState.totalPages = data.total_pages || 1; historyState.page = data.page || 1; elements.historyPage.textContent = `Page ${historyState.page} of ${historyState.totalPages}`; elements.historyPrev.disabled = historyState.page <= 1; elements.historyNext.disabled = historyState.page >= historyState.totalPages;
+    const rows = data.items || []; elements.historyEmpty.classList.toggle("hidden", rows.length > 0); elements.historyWrap.classList.toggle("hidden", rows.length === 0); renderHistoryRows(rows);
+  } catch (error) { elements.historyEmpty.textContent = error instanceof Error ? error.message : "History unavailable."; elements.historyEmpty.classList.remove("hidden"); elements.historyWrap.classList.add("hidden"); }
+}
+function renderReviewRows(rows) {
+  elements.reviewBody.replaceChildren();
+  rows.forEach((event) => {
+    const reason = verdictReason(event); const row = document.createElement("tr"); const fish = historyCell(event.fish_label || `Fish #${event.track_id}`); fish.classList.add("history-open"); fish.tabIndex = 0; fish.addEventListener("click", () => openHistoryAnalysis(event)); fish.addEventListener("keydown", (key) => { if (key.key === "Enter") openHistoryAnalysis(event); });
+    const action = document.createElement("button"); action.type = "button"; action.className = "button quiet review-action"; action.textContent = "Review"; action.addEventListener("click", () => openHistoryAnalysis(event)); const actionCell = document.createElement("td"); actionCell.append(action);
+    row.append(fish, historyCell(formatTime(event.timestamp)), historyCell(aiFinalGrade(event), "grade-cell"), historyCell(scoreText(weightedFinalSupport(event))), historyCell(coverageText(event)), historyCell(reason.text || reason.code || "-", "status-note"), historyCell(manualGrade(event) || "-", manualGrade(event) ? "manual-grade" : "status-note"), actionCell); elements.reviewBody.append(row);
+  });
+}
+async function loadReviewQueue(resetPage = false) {
+  if (!elements.reviewBody) return; if (resetPage) reviewState.page = 1;
+  try {
+    const response = await fetch("/api/reviews"); const data = await response.json(); if (!response.ok) throw new Error(data.detail || "Review queue unavailable"); const allItems = Array.isArray(data.items) ? data.items : []; const total = finiteNumber(data.total) ?? allItems.length;
+    reviewState.totalPages = Math.max(1, Math.ceil(total / 25)); reviewState.page = Math.min(Math.max(1, reviewState.page), reviewState.totalPages); elements.reviewPage.textContent = `Page ${reviewState.page} of ${reviewState.totalPages}`; elements.reviewPrev.disabled = reviewState.page <= 1; elements.reviewNext.disabled = reviewState.page >= reviewState.totalPages;
+    const rows = allItems.slice((reviewState.page - 1) * 25, reviewState.page * 25); elements.reviewEmpty.classList.toggle("hidden", rows.length > 0); elements.reviewWrap.classList.toggle("hidden", rows.length === 0); renderReviewRows(rows);
+  } catch (error) { elements.reviewEmpty.textContent = error instanceof Error ? error.message : "Review queue unavailable."; elements.reviewEmpty.classList.remove("hidden"); elements.reviewWrap.classList.add("hidden"); }
 }
 
 function setConfidence(value, apply = false) {
@@ -378,7 +691,9 @@ elements.uploadInput.addEventListener("change", () => { selectedUpload = element
 elements.analyze.addEventListener("click", async () => { if (!selectedUpload || uploadInFlight) return; uploadInFlight = true; elements.analyze.disabled = true; elements.uploadStatus.textContent = "Analyzing"; elements.uploadNote.textContent = "Running Model 1, then Model 2 on each detected fish crop."; try { const response = await fetch("/api/analyze-image", { method: "POST", headers: { "Content-Type": selectedUpload.type || "application/octet-stream", "X-Filename": selectedUpload.name }, body: selectedUpload }); const payload = await response.json(); if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`); const isPartPreview = payload.analysis_mode === "part_preview"; elements.uploadImage.src = payload.annotated_image; elements.uploadFishCount.textContent = String(isPartPreview ? payload.parts_detected : payload.fish_detected); elements.uploadCountLabel.textContent = isPartPreview ? "Parts detected" : "Fish found"; renderUploadQuality(payload.quality_counters); elements.uploadResults.classList.remove("hidden"); elements.uploadStatus.textContent = "Complete"; elements.uploadNote.textContent = isPartPreview ? "Raw part-preview test complete. It does not create fish counts or live inspection records." : payload.model2_available ? "Model 1 fish detections and Model 2 part/grade evidence are shown." : "Detection complete; the Quality Model is unavailable."; } catch (error) { elements.uploadStatus.textContent = "Error"; elements.uploadNote.textContent = error instanceof Error ? error.message : "Image analysis failed."; } finally { uploadInFlight = false; elements.analyze.disabled = !selectedUpload || !latestStatus?.upload_analysis_available; } });
 function renderUploadQuality(counters) { const grid = $("upload-quality-counter-grid"); grid.replaceChildren(); Object.entries(counters || {}).forEach(([name, value]) => { const card = document.createElement("article"); card.className = "feature-counter"; card.append(Object.assign(document.createElement("span"), { textContent: name }), Object.assign(document.createElement("strong"), { textContent: String(value) }), Object.assign(document.createElement("small"), { textContent: "Image analysis only" })); grid.append(card); }); }
 
+ensureHistoryVerdictFilter();
 elements.viewAll.addEventListener("click", () => showView("history")); elements.historyFilter.addEventListener("click", () => loadHistory(true)); elements.historyPrev.addEventListener("click", () => { if (historyState.page > 1) { historyState.page -= 1; loadHistory(); } }); elements.historyNext.addEventListener("click", () => { if (historyState.page < historyState.totalPages) { historyState.page += 1; loadHistory(); } });
+elements.reviewPrev.addEventListener("click", () => { if (reviewState.page > 1) { reviewState.page -= 1; loadReviewQueue(); } }); elements.reviewNext.addEventListener("click", () => { if (reviewState.page < reviewState.totalPages) { reviewState.page += 1; loadReviewQueue(); } });
 elements.settingsButton.addEventListener("click", openSettings); elements.sidebarSettings.addEventListener("click", openSettings); elements.closeSettings.addEventListener("click", closeSettings); elements.openConfidence.addEventListener("click", openSettings); elements.scrim.addEventListener("click", () => { closeSettings(); closeExport(); });
 elements.exportButton.addEventListener("click", openExport); elements.sidebarExport.addEventListener("click", openExport); elements.closeExport.addEventListener("click", closeExport); elements.cancelExport.addEventListener("click", closeExport);
 elements.slider.addEventListener("input", () => setConfidence(elements.slider.value)); elements.slider.addEventListener("change", () => setConfidence(elements.slider.value, true)); elements.confidenceMinus.addEventListener("click", () => setConfidence(Number(elements.slider.value) - 1, true)); elements.confidencePlus.addEventListener("click", () => setConfidence(Number(elements.slider.value) + 1, true)); elements.resetConfidence.addEventListener("click", () => setConfidence(defaultConfidence * 100, true));

@@ -34,6 +34,35 @@ def crop() -> np.ndarray:
 
 
 class GradingEngineTests(unittest.TestCase):
+    def test_documented_nested_configuration_is_equivalent_to_the_flat_rules(self) -> None:
+        config = GradingConfig.from_mapping(
+            {
+                "config_version": "nested-test",
+                "grading": {
+                    "weights": {"body": 0.50, "head": 0.30, "tail": 0.20},
+                    "require_body": True,
+                    "minimum_regions_observed": 1,
+                    "minimum_original_weight_coverage": 0.50,
+                    "final_verdict_threshold": 0.50,
+                    "temporal": {"minimum_valid_frames": 2, "use_frame_quality_filter": True},
+                    "frame_quality": {"minimum_crop_area": 48},
+                    "best_frame": {"best_frame_sharpness_weight": 0.40},
+                    "rejected_override": {"enabled": False, "threshold": 0.85},
+                    "hsv_adjustment": {"enabled": False},
+                },
+                "storage": {"save_best_fish_crop": True, "best_crop_directory": "results/crops"},
+            }
+        )
+        self.assertEqual(config.config_version, "nested-test")
+        self.assertEqual(config.minimum_track_observations, 2)
+        self.assertTrue(config.use_frame_quality_filter)
+        self.assertEqual(config.minimum_crop_area, 48)
+        self.assertAlmostEqual(config.best_frame_sharpness_weight, 0.40)
+        self.assertIsNone(config.rejected_override_threshold)
+        self.assertFalse(config.color_adjustments_enabled)
+        self.assertTrue(config.save_best_fish_crop)
+        self.assertEqual(config.best_crop_directory, "results/crops")
+
     def engine(self, **overrides: object) -> WeightedGradingEngine:
         return WeightedGradingEngine(GradingConfig(**overrides))
 
@@ -52,7 +81,7 @@ class GradingEngineTests(unittest.TestCase):
         self.assertAlmostEqual(verdict.part_results["Tail"]["contributions"]["Class A"], .128)
 
     def test_mixed_grades_compare_all_four_weighted_scores(self) -> None:
-        verdict = self.engine().evaluate(9, crop(), [
+        verdict = self.engine(final_verdict_threshold=.40).evaluate(9, crop(), [
             part("Body", "Class B", .80), part("Head", "Class A", .90), part("Tail", "Class A", .90),
         ], stabilize=False)
         self.assertAlmostEqual(verdict.weighted_scores["Class A"], .45)
@@ -113,11 +142,11 @@ class ExplainableExportTests(unittest.TestCase):
         self.assertAlmostEqual(float(row["final_weighted_score"]), 63.9)
         self.assertAlmostEqual(float(row["body_weighted_contribution"]), 29.5)
         csv_rows = list(csv.DictReader(StringIO(make_csv([event], DEFAULT_EXPORT_FIELDS).decode("utf-8-sig"))))
-        self.assertEqual(csv_rows[0]["Final Grade"], "Class A")
+        self.assertEqual(csv_rows[0]["AI Final Grade"], "Class A")
         workbook = make_xlsx([event], DEFAULT_EXPORT_FIELDS, {"Total Fish": 1}, verdict.to_dict().get("grading_config", {"part_weights": {"Body": .5, "Head": .3, "Tail": .2}}))
         from openpyxl import load_workbook
         loaded = load_workbook(BytesIO(workbook), data_only=True)
-        self.assertEqual(loaded.sheetnames, ["Fish Inspections", "Session Summary", "Feature Summary", "Grade Calculation Rules"])
+        self.assertEqual(loaded.sheetnames, ["Fish Inspections", "Session Summary", "Feature Summary", "Grade Calculation Rules", "Review Queue"])
         self.assertEqual(loaded["Fish Inspections"].cell(row=2, column=3).value, "Class A")
 
     def test_history_keeps_an_updated_calculation_even_when_grade_is_unchanged(self) -> None:

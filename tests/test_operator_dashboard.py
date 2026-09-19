@@ -6,9 +6,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import cv2
+import numpy as np
+
 from src.api.camera import CameraInspectionService
 from src.api.domain import Detection, InspectionState, QualitySummary, TrackingConfig, TrackingManager
 from src.api.model import resolve_weights_path
+from src.inference.part_fusion import PartDetection
+from src.inference.preprocessing import CropBounds
+from src.inference.yolo_quality_model import FishQualityObservation
 
 
 def detection(
@@ -202,6 +208,26 @@ class StateTests(unittest.TestCase):
         self.assertFalse(state.begin_start())
         self.assertEqual(state.snapshot()["inspection_status"], "starting")
 
+    def test_current_detection_uses_active_fish_before_a_completed_event(self) -> None:
+        state = InspectionState(TrackingConfig(line_position=0.5))
+        state.process_detections([detection(91, center_x=30)], (100, 100), timestamp=0.0)
+        snapshot = state.snapshot()
+        current = snapshot["current_detection"]
+        self.assertIsNone(snapshot["latest_event"])
+        self.assertIsNotNone(current)
+        assert isinstance(current, dict)
+        self.assertEqual(current["track_id"], 91)
+        self.assertTrue(current["live_track"])
+
+    def test_part_overlay_is_a_supported_box_based_display_setting(self) -> None:
+        state = InspectionState()
+        state.set_display_settings({"part_overlays": True})
+        display = state.current_display_settings()
+        self.assertTrue(display["part_overlays"])
+        self.assertNotIn("masks", display)
+        state.set_display_settings({"masks": False})
+        self.assertFalse(state.current_display_settings()["part_overlays"])
+
 
 class _FakeModel:
     model = object()
@@ -242,6 +268,19 @@ class CameraLifecycleTests(unittest.TestCase):
         service = CameraInspectionService(state, _FakeModel())  # type: ignore[arg-type]
         self.assertFalse(service.stop())
         self.assertEqual(state.snapshot()["inspection_status"], "stopped")
+
+    def test_part_overlay_tints_the_measured_model2_box(self) -> None:
+        state = InspectionState()
+        state.set_display_settings({"part_overlays": True, "outlines": False, "features": False})
+        service = CameraInspectionService(state, _FakeModel())  # type: ignore[arg-type]
+        part = PartDetection(0, "Class A Body", "Body", "Class A", 0.91, (2.0, 2.0, 10.0, 10.0))
+        observation = FishQualityObservation(1, "Class A", 0.91, (part,), {}, {})
+        frame = np.zeros((30, 30, 3), dtype=np.uint8)
+
+        annotated = service._annotate_quality(frame.copy(), [(observation, CropBounds(5, 5, 25, 25))], cv2)
+
+        self.assertTrue(np.any(annotated[10, 10]))
+        self.assertFalse(np.any(frame))
 
     def test_reset_session_resets_model_tracker_and_domain(self) -> None:
         state = InspectionState()

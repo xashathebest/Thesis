@@ -145,8 +145,21 @@ def _first_value(record: Mapping[str, Any], keys: Sequence[str]) -> object:
     return None
 
 
+def _observed_flag(value: object) -> bool | None:
+    """Interpret an explicitly exported observed/not-observed value safely."""
+
+    if isinstance(value, bool):
+        return value
+    token = _normalized_token(value)
+    if token in {"yes", "true", "1", "observed", "present"}:
+        return True
+    if token in {"no", "false", "0", "notobserved", "notdetected", "unknown"}:
+        return False
+    return None
+
+
 def _record_id(record: Mapping[str, Any], index: int) -> str:
-    value = _first_value(record, ("fish_id", "fishId", "track_id", "id", "specimen_id", "image_id"))
+    value = _first_value(record, ("fish_id", "fishId", "track_id", "id", "specimen_id", "image_id", "Fish ID"))
     return str(value) if value not in (None, "") else f"row-{index + 1}"
 
 
@@ -159,20 +172,20 @@ def _true_grade(record: Mapping[str, Any]) -> str:
 
 
 def _reported_grade(record: Mapping[str, Any]) -> str | None:
-    value = _first_value(record, ("final_grade", "predicted_grade", "system_final_grade", "quality", "grade"))
+    value = _first_value(record, ("final_grade", "predicted_grade", "system_final_grade", "quality", "grade", "AI Final Grade"))
     return normalize_grade(value, allow_ungraded=True)
 
 
 def _reported_support(record: Mapping[str, Any]) -> float | None:
     return _unit_interval(
-        _first_value(record, ("final_score", "final_support", "quality_confidence", "grade_confidence", "support")),
+        _first_value(record, ("final_score", "final_support", "quality_confidence", "grade_confidence", "support", "AI Final Support (%)")),
         field="final support",
     )
 
 
 def _model1_confidence(record: Mapping[str, Any]) -> float | None:
     return _unit_interval(
-        _first_value(record, ("model1_confidence", "detection_confidence", "final_confidence", "fish_confidence")),
+        _first_value(record, ("model1_confidence", "detection_confidence", "final_confidence", "fish_confidence", "Model 1 Detection Confidence (%)")),
         field="Model 1 confidence",
     )
 

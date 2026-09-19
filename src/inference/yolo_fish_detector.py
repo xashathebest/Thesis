@@ -18,6 +18,7 @@ import numpy as np
 
 from src.api.domain import Detection
 from src.inference.fish_detector import FISH_CLASS_ID, FISH_CLASS_NAME, _ByteTrackInput, _default_tracker_factory
+from src.inference.model_traceability import shortened_sha256
 from src.inference.preprocessing import clamp_bbox, validate_image
 
 
@@ -173,6 +174,7 @@ class YoloFishDetector:
         self.class_names: tuple[str, ...] = ()
         self.tracker_backend = "unresolved"
         self.last_inference_seconds: float | None = None
+        self.checkpoint_sha256: str | None = None
         self._lock = RLock()
 
     @property
@@ -246,6 +248,8 @@ class YoloFishDetector:
             self.error = f"Unable to load Model 1 as a local YOLO detector. Verify the checkpoint and Ultralytics/PyTorch installation. Details: {exc}"
             return False
         self.model, self._tracker, self.class_names, self.tracker_backend, self.error = model, tracker, labels, tracker_backend, None
+        # Calculated once at successful startup, never once per camera frame.
+        self.checkpoint_sha256 = shortened_sha256(self.model_path)
         return True
 
     @staticmethod
@@ -313,4 +317,6 @@ class YoloFishDetector:
             "device": self.device,
             "tracker": self.tracker_backend,
             "last_inference_ms": round(self.last_inference_seconds * 1000, 2) if self.last_inference_seconds is not None else None,
+            "checkpoint_name": self.model_path.name if self.model_path else None,
+            "checkpoint_sha256": self.checkpoint_sha256,
         }
