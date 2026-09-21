@@ -1,0 +1,8 @@
+{
+  "regression_suite_passed": true,
+  "model1_validation_completed": false,
+  "model2_validation_completed": false,
+  "association_validation_completed": false,
+  "tracking_validation_completed": false,
+  "end_to_end_validation_completed": false
+}

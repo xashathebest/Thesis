@@ -116,6 +116,13 @@ class YoloTwoModelPipelineTests(unittest.TestCase):
         result = quality.predict(np.zeros((100, 100, 3), dtype=np.uint8), 1, stabilize=False)
         self.assertEqual(result.quality, "Class A")
 
+    def test_unavailable_model2_is_an_explicit_ungraded_policy_result(self) -> None:
+        quality = YoloQualityModel(None, device="cpu")
+        result = quality.unavailable_observation(np.zeros((100, 100, 3), dtype=np.uint8), 1, stabilize=False)
+        self.assertIsNone(result.quality)
+        self.assertFalse(result.analysis["model2_available"])
+        self.assertIn("UG_MODEL2_UNAVAILABLE", result.analysis["reason_codes"])
+
     def test_optional_best_crop_saves_only_the_final_selected_candidate(self) -> None:
         engine = WeightedGradingEngine(
             GradingConfig(

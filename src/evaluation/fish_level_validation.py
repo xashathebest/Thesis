@@ -46,10 +46,17 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
+from src.inference.grading_policy import (
+    GRADE_NAMES,
+    PART_NAMES,
+    UNGRADED,
+    FishGradingInput,
+    GradingPolicy,
+    grade_fish,
+)
 
-GRADE_ORDER = ("Class A", "Class B", "Class C", "Rejected")
-PART_ORDER = ("Body", "Head", "Tail")
-UNGRADED = "Ungraded"
+GRADE_ORDER = GRADE_NAMES
+PART_ORDER = PART_NAMES
 
 _GRADE_ALIASES = {
     "a": "Class A",
@@ -158,6 +165,21 @@ def _observed_flag(value: object) -> bool | None:
     return None
 
 
+def _boolean(value: object, *, field: str) -> bool:
+    """Parse a configuration flag without treating ``\"false\"`` as true."""
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in {0, 1}:
+        return bool(value)
+    token = _normalized_token(value)
+    if token in {"true", "yes", "on", "1"}:
+        return True
+    if token in {"false", "no", "off", "0"}:
+        return False
+    raise FishLevelValidationError(f"{field} must be a boolean value.")
+
+
 def _record_id(record: Mapping[str, Any], index: int) -> str:
     value = _first_value(record, ("fish_id", "fishId", "track_id", "id", "specimen_id", "image_id", "Fish ID"))
     return str(value) if value not in (None, "") else f"row-{index + 1}"
@@ -257,10 +279,11 @@ def _extract_region_evidence(record: Mapping[str, Any]) -> dict[str, dict[str, A
             payload.get("presence_confidence", payload.get("presence", payload.get("confidence"))),
             field=f"recorded {region} presence confidence",
         )
+        observed = _observed_flag(payload.get("present", True))
         extracted[region] = {
             "scores": scores,
             "presence_confidence": presence if presence is not None else max(scores.values()),
-            "recorded_present": bool(payload.get("present", True)),
+            "recorded_present": True if observed is None else observed,
             "original_weight": _unit_interval(payload.get("weight"), field=f"recorded {region} weight"),
         }
     return extracted
@@ -291,7 +314,7 @@ def _recorded_evidence_coverage(record: Mapping[str, Any], evidence: Mapping[str
 
 @dataclass(frozen=True)
 class EvaluationRules:
-    """Offline rule set for replaying evidence, never a model-training config."""
+    """Offline adapter for the shared runtime :class:`GradingPolicy`."""
 
     body_weight: float = 0.50
     head_weight: float = 0.30
@@ -302,33 +325,163 @@ class EvaluationRules:
     model1_confidence_threshold: float | None = None
     model2_evidence_threshold: float = 0.25
     final_verdict_threshold: float = 0.50
+    grading_mode: str = "standard"
+    strict_minimum_regions_observed: int = 3
+    strict_minimum_original_weight_coverage: float = 1.00
+    minimum_grade_margin: float = 0.0
+    rejected_override_threshold: float | None = None
+    maximum_grade_stddev: float | None = None
+    # These settings govern live evidence collection.  They are retained in an
+    # offline rule snapshot so a serialized runtime configuration can be
+    # replayed/audited without silently dropping meaningful policy metadata.
+    minimum_track_observations: int = 2
+    temporal_evidence_limit: int = 120
 
     def __post_init__(self) -> None:
-        weights = (self.body_weight, self.head_weight, self.tail_weight)
-        if any(not math.isfinite(weight) or weight < 0.0 for weight in weights):
-            raise FishLevelValidationError("Part weights must be finite non-negative values.")
-        if not math.isclose(sum(weights), 1.0, abs_tol=1e-9):
-            raise FishLevelValidationError("Body, Head, and Tail weights must total exactly 1.0.")
-        if self.minimum_regions_observed < 1 or self.minimum_regions_observed > len(PART_ORDER):
-            raise FishLevelValidationError("minimum_regions_observed must be between 1 and 3.")
-        for name, value in (
-            ("minimum_original_weight_coverage", self.minimum_original_weight_coverage),
-            ("model2_evidence_threshold", self.model2_evidence_threshold),
-            ("final_verdict_threshold", self.final_verdict_threshold),
-        ):
-            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
-                raise FishLevelValidationError(f"{name} must be between 0 and 1.")
+        try:
+            self.to_policy()
+        except (TypeError, ValueError) as exc:
+            raise FishLevelValidationError(f"Invalid evaluation rule configuration: {exc}") from exc
         if self.model1_confidence_threshold is not None and (
             not math.isfinite(self.model1_confidence_threshold) or not 0.0 <= self.model1_confidence_threshold <= 1.0
         ):
             raise FishLevelValidationError("model1_confidence_threshold must be null or between 0 and 1.")
+        if not isinstance(self.minimum_track_observations, int) or self.minimum_track_observations < 1:
+            raise FishLevelValidationError("minimum_track_observations must be a positive integer.")
+        if not isinstance(self.temporal_evidence_limit, int) or self.temporal_evidence_limit < 1:
+            raise FishLevelValidationError("temporal_evidence_limit must be a positive integer.")
+
+    def to_policy(self) -> GradingPolicy:
+        """Return the exact pure policy used by live inference.
+
+        The optional Model 1 threshold remains an offline input-quality gate;
+        it maps to the policy's parent-usable flag rather than adding a second
+        fish-grade formula.
+        """
+
+        return GradingPolicy(
+            body_weight=self.body_weight,
+            head_weight=self.head_weight,
+            tail_weight=self.tail_weight,
+            require_body=self.require_body,
+            minimum_part_confidence=self.model2_evidence_threshold,
+            final_verdict_threshold=self.final_verdict_threshold,
+            grading_mode=self.grading_mode,
+            minimum_regions_observed=self.minimum_regions_observed,
+            minimum_original_weight_coverage=self.minimum_original_weight_coverage,
+            strict_minimum_regions_observed=self.strict_minimum_regions_observed,
+            strict_minimum_original_weight_coverage=self.strict_minimum_original_weight_coverage,
+            minimum_grade_margin=self.minimum_grade_margin,
+            rejected_override_threshold=self.rejected_override_threshold,
+            maximum_grade_stddev=self.maximum_grade_stddev,
+        )
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any]) -> "EvaluationRules":
-        """Accept project-style names as well as a compact experiment mapping."""
+        """Load replay rules with the same meaningful settings as live mode.
 
-        source = _as_mapping(values.get("grading")) or values
+        Offline experiments intentionally accept a compact mapping, but a typo
+        must never quietly select defaults different from the requested live
+        policy. ``minimum_final_score`` is accepted only as a non-conflicting
+        deprecated alias for ``final_verdict_threshold``.
+        """
+
+        if not isinstance(values, Mapping):
+            raise FishLevelValidationError("Evaluation rules must be a mapping.")
+        nested = values.get("grading")
+        if nested is not None and not isinstance(nested, Mapping):
+            raise FishLevelValidationError("grading must be a mapping.")
+        source: Mapping[str, Any] = nested if isinstance(nested, Mapping) else values
         weights = _as_mapping(source.get("weights")) or _as_mapping(source.get("part_weights")) or {}
+        rejected_override = _as_mapping(source.get("rejected_override")) or {}
+        temporal = _as_mapping(source.get("temporal")) or {}
+
+        direct_keys = {
+            "body_weight", "head_weight", "tail_weight", "body", "head", "tail", "Body", "Head", "Tail",
+            "require_body", "minimum_regions_observed", "minimum_original_weight_coverage",
+            "minimum_evidence_coverage", "model1_confidence_threshold", "detection_confidence_threshold",
+            "model1_threshold", "model2_evidence_threshold", "minimum_part_confidence",
+            "quality_confidence_threshold", "model2_threshold", "final_verdict_threshold",
+            "minimum_final_score", "final_score_threshold", "grading_mode",
+            "strict_minimum_regions_observed", "strict_minimum_original_weight_coverage",
+            "minimum_grade_margin", "rejected_override_threshold", "maximum_grade_stddev",
+            "minimum_track_observations", "temporal_evidence_limit",
+            # Explicitly recognized runtime metadata. Offline replay receives
+            # already aggregated evidence, so image-stage frame/best-frame
+            # controls are preserved for provenance rather than reapplied.
+            "color_adjustments_enabled", "defect_adjustments_enabled",
+            "deprecated_minimum_final_score_used", "active_final_verdict_threshold",
+            "frame_quality", "best_frame", "hsv_adjustment", "storage",
+            "weights", "part_weights", "rejected_override", "temporal",
+        }
+        metadata_keys = {"name", "id", "description", "notes", "metadata", "config_version", "dataset_split"}
+        source_allowed = direct_keys | (metadata_keys if source is values else set())
+        unknown = sorted(str(key) for key in source if key not in source_allowed)
+        if unknown:
+            raise FishLevelValidationError(f"Unknown evaluation rule configuration key(s): {', '.join(unknown)}.")
+        if source is not values:
+            root_unknown = sorted(str(key) for key in values if key not in metadata_keys | {"grading", "storage"})
+            if root_unknown:
+                raise FishLevelValidationError(f"Unknown evaluation rule wrapper key(s): {', '.join(root_unknown)}.")
+        weight_unknown = sorted(str(key) for key in weights if key not in {"body", "head", "tail", "Body", "Head", "Tail"})
+        if weight_unknown:
+            raise FishLevelValidationError(f"Unknown part-weight key(s): {', '.join(weight_unknown)}.")
+        override_unknown = sorted(str(key) for key in rejected_override if key not in {"enabled", "threshold"})
+        if override_unknown:
+            raise FishLevelValidationError(f"Unknown rejected_override key(s): {', '.join(override_unknown)}.")
+        temporal_unknown = sorted(
+            str(key)
+            for key in temporal
+            if key not in {
+                "minimum_valid_frames", "minimum_track_observations", "temporal_evidence_limit",
+                "maximum_grade_stddev", "use_frame_quality_filter",
+            }
+        )
+        if temporal_unknown:
+            raise FishLevelValidationError(f"Unknown temporal rule key(s): {', '.join(temporal_unknown)}.")
+
+        def metadata_mapping(name: str, allowed: set[str]) -> None:
+            value = source.get(name)
+            if value is None:
+                return
+            mapping = _as_mapping(value)
+            if mapping is None:
+                raise FishLevelValidationError(f"{name} must be a mapping when supplied.")
+            unknown = sorted(str(key) for key in mapping if key not in allowed)
+            if unknown:
+                raise FishLevelValidationError(f"Unknown {name} key(s): {', '.join(unknown)}.")
+
+        metadata_mapping(
+            "frame_quality",
+            {
+                "use_frame_quality_filter", "minimum_detection_confidence", "minimum_crop_width",
+                "minimum_crop_height", "minimum_crop_area", "reject_clipped_crops",
+                "sharpness_filter_enabled", "minimum_sharpness",
+            },
+        )
+        metadata_mapping(
+            "best_frame",
+            {
+                "best_frame_detection_weight", "best_frame_area_weight", "best_frame_sharpness_weight",
+                "best_frame_region_weight", "best_frame_area_reference", "best_frame_sharpness_reference",
+                "best_frame_only_usable", "best_frame_clipped_penalty", "detection_weight", "area_weight",
+                "sharpness_weight", "region_weight", "area_reference", "sharpness_reference", "only_usable",
+                "clipped_penalty", "save_best_fish_crop", "save_annotated_best_fish_crop", "best_crop_directory",
+            },
+        )
+        metadata_mapping("hsv_adjustment", {"enabled"})
+        storage_value = values.get("storage") if source is not values else source.get("storage")
+        if storage_value is not None:
+            storage = _as_mapping(storage_value)
+            if storage is None:
+                raise FishLevelValidationError("storage must be a mapping when supplied.")
+            storage_unknown = sorted(
+                str(key)
+                for key in storage
+                if key not in {"save_best_fish_crop", "save_annotated_best_fish_crop", "best_crop_directory"}
+            )
+            if storage_unknown:
+                raise FishLevelValidationError(f"Unknown storage key(s): {', '.join(storage_unknown)}.")
 
         def value_for(*keys: str, default: Any) -> Any:
             for key in keys:
@@ -339,6 +492,20 @@ class EvaluationRules:
             return default
 
         defaults = cls()
+        canonical = source.get("final_verdict_threshold")
+        legacy = source.get("minimum_final_score")
+        if canonical is not None and legacy is not None:
+            canonical_number = _finite_number(canonical)
+            legacy_number = _finite_number(legacy)
+            if canonical_number is None or legacy_number is None or not math.isclose(canonical_number, legacy_number, abs_tol=1e-12):
+                raise FishLevelValidationError(
+                    "minimum_final_score is deprecated and cannot conflict with final_verdict_threshold."
+                )
+        override_threshold = value_for("rejected_override_threshold", default=defaults.rejected_override_threshold)
+        if "threshold" in rejected_override:
+            override_threshold = rejected_override["threshold"]
+        if rejected_override.get("enabled") is not None and not _boolean(rejected_override["enabled"], field="rejected_override.enabled"):
+            override_threshold = None
         raw = {
             "body_weight": value_for("body_weight", "body", "Body", default=defaults.body_weight),
             "head_weight": value_for("head_weight", "head", "Head", default=defaults.head_weight),
@@ -358,13 +525,32 @@ class EvaluationRules:
             "final_verdict_threshold": value_for(
                 "final_verdict_threshold", "minimum_final_score", "final_score_threshold", default=defaults.final_verdict_threshold
             ),
+            "grading_mode": value_for("grading_mode", default=defaults.grading_mode),
+            "strict_minimum_regions_observed": value_for(
+                "strict_minimum_regions_observed", default=defaults.strict_minimum_regions_observed
+            ),
+            "strict_minimum_original_weight_coverage": value_for(
+                "strict_minimum_original_weight_coverage", default=defaults.strict_minimum_original_weight_coverage
+            ),
+            "minimum_grade_margin": value_for("minimum_grade_margin", default=defaults.minimum_grade_margin),
+            "rejected_override_threshold": override_threshold,
+            "maximum_grade_stddev": value_for(
+                "maximum_grade_stddev", default=temporal.get("maximum_grade_stddev", defaults.maximum_grade_stddev)
+            ),
+            "minimum_track_observations": source.get(
+                "minimum_track_observations",
+                temporal.get("minimum_track_observations", temporal.get("minimum_valid_frames", defaults.minimum_track_observations)),
+            ),
+            "temporal_evidence_limit": source.get(
+                "temporal_evidence_limit", temporal.get("temporal_evidence_limit", defaults.temporal_evidence_limit)
+            ),
         }
         try:
             return cls(
                 body_weight=float(raw["body_weight"]),
                 head_weight=float(raw["head_weight"]),
                 tail_weight=float(raw["tail_weight"]),
-                require_body=bool(raw["require_body"]),
+                require_body=_boolean(raw["require_body"], field="require_body"),
                 minimum_regions_observed=int(raw["minimum_regions_observed"]),
                 minimum_original_weight_coverage=float(raw["minimum_original_weight_coverage"]),
                 model1_confidence_threshold=(
@@ -372,6 +558,18 @@ class EvaluationRules:
                 ),
                 model2_evidence_threshold=float(raw["model2_evidence_threshold"]),
                 final_verdict_threshold=float(raw["final_verdict_threshold"]),
+                grading_mode=str(raw["grading_mode"]),
+                strict_minimum_regions_observed=int(raw["strict_minimum_regions_observed"]),
+                strict_minimum_original_weight_coverage=float(raw["strict_minimum_original_weight_coverage"]),
+                minimum_grade_margin=float(raw["minimum_grade_margin"]),
+                rejected_override_threshold=(
+                    None if raw["rejected_override_threshold"] is None else float(raw["rejected_override_threshold"])
+                ),
+                maximum_grade_stddev=(
+                    None if raw["maximum_grade_stddev"] is None else float(raw["maximum_grade_stddev"])
+                ),
+                minimum_track_observations=int(raw["minimum_track_observations"]),
+                temporal_evidence_limit=int(raw["temporal_evidence_limit"]),
             )
         except (TypeError, ValueError) as exc:
             raise FishLevelValidationError(f"Invalid evaluation rule configuration: {exc}") from exc
@@ -380,15 +578,14 @@ class EvaluationRules:
         return {"Body": self.body_weight, "Head": self.head_weight, "Tail": self.tail_weight}[region]
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "part_weights": {region: self.weight(region) for region in PART_ORDER},
-            "require_body": self.require_body,
-            "minimum_regions_observed": self.minimum_regions_observed,
-            "minimum_original_weight_coverage": self.minimum_original_weight_coverage,
+        values = self.to_policy().to_dict()
+        values.update({
             "model1_confidence_threshold": self.model1_confidence_threshold,
             "model2_evidence_threshold": self.model2_evidence_threshold,
-            "final_verdict_threshold": self.final_verdict_threshold,
-        }
+            "minimum_track_observations": self.minimum_track_observations,
+            "temporal_evidence_limit": self.temporal_evidence_limit,
+        })
+        return values
 
 
 def recompute_final_verdict(record: Mapping[str, Any] | object, rules: EvaluationRules) -> dict[str, Any]:
@@ -406,55 +603,82 @@ def recompute_final_verdict(record: Mapping[str, Any] | object, rules: Evaluatio
             "Recorded regional evidence is required for rule replay; expected analysis.part_results or region_evidence."
         )
     model1_confidence = _model1_confidence(payload)
-    available = [
-        region
-        for region in PART_ORDER
-        if region in evidence
-        and bool(evidence[region].get("recorded_present", True))
-        and float(evidence[region]["presence_confidence"]) >= rules.model2_evidence_threshold
-    ]
-    original_coverage = sum(rules.weight(region) for region in available)
-    effective_weights = {
-        region: (rules.weight(region) / original_coverage if region in available and original_coverage > 0 else 0.0)
-        for region in PART_ORDER
-    }
-    weighted_scores = {
-        grade: sum(
-            float(evidence[region]["scores"][grade]) * effective_weights[region]
-            for region in available
-        )
-        for grade in GRADE_ORDER
-    }
-    best_grade = max(GRADE_ORDER, key=lambda grade: (weighted_scores[grade], -GRADE_ORDER.index(grade))) if available else None
-    best_support = weighted_scores[best_grade] if best_grade is not None else None
-    reason_codes: list[str] = []
+    parent_usable = True
     if rules.model1_confidence_threshold is not None:
-        if model1_confidence is None:
-            reason_codes.append("MODEL_1_CONFIDENCE_UNAVAILABLE")
-        elif model1_confidence < rules.model1_confidence_threshold:
-            reason_codes.append("MODEL_1_BELOW_THRESHOLD")
-    if not available:
-        reason_codes.append("MODEL_2_NO_VALID_RESULT")
-    if rules.require_body and "Body" not in available:
-        reason_codes.append("BODY_NOT_OBSERVED")
-    if len(available) < rules.minimum_regions_observed:
-        reason_codes.append("NOT_ENOUGH_REGIONS")
-    if original_coverage < rules.minimum_original_weight_coverage:
-        reason_codes.append("INSUFFICIENT_REGION_COVERAGE")
-    if best_support is None or best_support < rules.final_verdict_threshold:
-        reason_codes.append("LOW_FINAL_SUPPORT")
+        parent_usable = model1_confidence is not None and model1_confidence >= rules.model1_confidence_threshold
 
-    final_grade = best_grade if not reason_codes else None
+    scores = {
+        region: dict(evidence[region]["scores"]) if region in evidence else {grade: 0.0 for grade in GRADE_ORDER}
+        for region in PART_ORDER
+    }
+    presence = {
+        region: evidence[region]["presence_confidence"] if region in evidence else 0.0
+        for region in PART_ORDER
+    }
+    recorded_present = {
+        region: bool(evidence[region].get("recorded_present", True)) if region in evidence else False
+        for region in PART_ORDER
+    }
+    analysis = _as_mapping(payload.get("analysis")) or {}
+    temporal = _as_mapping(analysis.get("temporal_stability")) or _as_mapping(payload.get("temporal_stability")) or {}
+    observation_raw = temporal.get("usable_frame_count", analysis.get("observation_count", payload.get("observation_count", 1)))
+    try:
+        observation_count = max(0, int(observation_raw))
+    except (TypeError, ValueError):
+        observation_count = 1
+    temporal_ready = _boolean(temporal.get("ready", True), field="temporal ready")
+    temporal_grade_stddev = _unit_interval(
+        temporal.get(
+            "winning_grade_max_standard_deviation",
+            analysis.get("winning_grade_max_standard_deviation", payload.get("winning_grade_max_standard_deviation")),
+        ),
+        field="winning grade standard deviation",
+    )
+    frame_quality = _as_mapping(analysis.get("frame_quality")) or _as_mapping(payload.get("frame_quality")) or {}
+    association_status = frame_quality.get("association_status", analysis.get("association_status", payload.get("association_status")))
+    out_of_frame = any(
+        _boolean(frame_quality.get(key, False), field=key)
+        for key in ("out_of_frame", "parent_frame_clipped", "parent_crop_clipped")
+    )
+    model2_available = _boolean(
+        payload.get("model2_available", analysis.get("model2_available", True)),
+        field="model2_available",
+    )
+    rejected_frame_count = _finite_number(frame_quality.get("rejected_frame_count", 0)) or 0.0
+    decision = grade_fish(
+        FishGradingInput(
+            part_scores=scores,
+            presence_confidence=presence,
+            recorded_present=recorded_present,
+            observation_count=observation_count,
+            temporal_ready=temporal_ready,
+            parent_usable=parent_usable,
+            association_status=str(association_status) if association_status is not None else None,
+            out_of_frame=out_of_frame,
+            frame_quality_rejected=rejected_frame_count > 0.0 and observation_count == 0,
+            model2_available=model2_available,
+            temporal_grade_stddev=temporal_grade_stddev,
+        ),
+        rules.to_policy(),
+    )
     return {
-        "final_grade": final_grade or UNGRADED,
-        "final_support": best_support,
-        "best_evidence_grade": best_grade,
-        "weighted_scores": weighted_scores,
-        "observed_regions": available,
-        "original_weight_coverage": original_coverage,
-        "effective_weights": effective_weights,
-        "verdict_status": "AUTO_GRADED" if final_grade else "NEEDS_REVIEW",
-        "reason_codes": reason_codes or ["AUTO_GRADED"],
+        "final_grade": decision.final_grade or UNGRADED,
+        "final_support": decision.final_support,
+        "best_evidence_grade": decision.top_grade,
+        "best_evidence_support": decision.top_support,
+        "top_grade": decision.top_grade,
+        "top_support": decision.top_support,
+        "second_grade": decision.second_grade,
+        "second_support": decision.second_support,
+        "grade_margin": decision.grade_margin,
+        "weighted_scores": dict(decision.weighted_scores),
+        "observed_regions": list(decision.observed_regions),
+        "original_weight_coverage": decision.evidence_coverage,
+        "evidence_coverage": decision.evidence_coverage,
+        "effective_weights": dict(decision.effective_weights),
+        "verdict_status": decision.verdict_status,
+        "verdict_reason_code": decision.reason_codes[0] if decision.reason_codes else None,
+        "reason_codes": list(decision.reason_codes),
         "model1_confidence": model1_confidence,
         "rules": rules.to_dict(),
     }

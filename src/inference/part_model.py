@@ -6,7 +6,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Callable
 
-from src.inference.part_fusion import PartDetection
+from src.inference.part_types import PartDetection
 from src.preprocessing.audit_v7_exports import SOURCE_CLASSES
 
 

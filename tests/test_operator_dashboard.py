@@ -12,7 +12,7 @@ import numpy as np
 from src.api.camera import CameraInspectionService
 from src.api.domain import Detection, InspectionState, QualitySummary, TrackingConfig, TrackingManager
 from src.api.model import resolve_weights_path
-from src.inference.part_fusion import PartDetection
+from src.inference.part_types import PartDetection
 from src.inference.preprocessing import CropBounds
 from src.inference.yolo_quality_model import FishQualityObservation
 

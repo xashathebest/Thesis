@@ -1,7 +1,7 @@
 # Explainable whole-fish grading configuration for the supplied two-model flow.
 # These values are operating rules, not scientifically validated biological
 # thresholds. Keep a version with each finalized fish record for traceability.
-config_version: "2.0"
+config_version: "3.0"
 
 grading:
   # These weights apply to Model 2 Head/Body/Tail evidence only. They are not
@@ -12,8 +12,8 @@ grading:
     tail: 0.20
 
   # A verdict requires Body evidence because it is the primary quality region.
-  # Head/Tail that are not observed remain unknown; available region weights
-  # are renormalized rather than treating an absent detection as a zero score.
+  # Head/Tail that are not observed remain unknown. Their original weights are
+  # never redistributed: unavailable regions contribute zero support.
   require_body: true
   minimum_part_confidence: 0.25
 
@@ -21,14 +21,15 @@ grading:
   # the evidence requirements below. 0.50 is configurable rather than claimed
   # to be an optimal scientific threshold.
   final_verdict_threshold: 0.50
-  # Retained for compatibility with older clients; the active final gate is the
-  # larger of this value and final_verdict_threshold.
-  minimum_final_score: 0.25
   grading_mode: standard
   minimum_regions_observed: 1
   minimum_original_weight_coverage: 0.50
-  strict_minimum_regions_observed: 2
-  strict_minimum_original_weight_coverage: 0.70
+  # Thesis-safe strict mode requires reliable evidence for every region.
+  strict_minimum_regions_observed: 3
+  strict_minimum_original_weight_coverage: 1.00
+  # Zero preserves the current baseline; select a nonzero value only through
+  # validation, not as an assumed scientific optimum.
+  minimum_grade_margin: 0.00
 
   # Live tracks mean-aggregate strongest per-region/per-grade evidence. A
   # verdict waits for this many usable observations. Set maximum_grade_stddev

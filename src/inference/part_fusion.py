@@ -1,8 +1,10 @@
-"""Explainable part association and whole-fish quality evidence fusion.
+"""Retained research-only structural part-fusion experiments.
 
-The preferred runtime supplies tracked whole-fish anchors from a reviewed
-whole-fish model. A Body-anchored mode exists for offline/provisional analysis,
-but its synthetic candidates are not a replacement for whole-fish ground truth.
+The canonical production path uses ``yolo_fish_detector.py``,
+``yolo_quality_model.py``, ``association.py``, and ``grading_policy.py``. This
+module is intentionally not imported by that runtime. Its Body-anchored and
+structural hypotheses are useful provenance for research comparison only and
+must not create production whole-fish grades or physical-missing claims.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from src.preprocessing.audit_v7_exports import (
     map_part_category,
 )
 from src.preprocessing.dataset_utils import load_yaml_file, project_root
+from src.inference.part_types import PartDetection
 
 
 QUALITY_NAMES = tuple(FINAL_CLASSES[index] for index in sorted(FINAL_CLASSES))
@@ -62,55 +65,6 @@ def _point_in_box(point: Point, box: BBox, padding: float = 0.0) -> bool:
         box[0] - padding <= point[0] <= box[2] + padding
         and box[1] - padding <= point[1] <= box[3] + padding
     )
-
-
-@dataclass(frozen=True)
-class PartDetection:
-    """One exact v7 region/grade prediction."""
-
-    source_class_id: int
-    source_class_name: str
-    region: str
-    grade: str
-    confidence: float
-    bbox: BBox
-    mask: tuple[Point, ...] | None = None
-
-    @classmethod
-    def from_source_class(
-        cls,
-        source_class_id: int,
-        confidence: float,
-        bbox: BBox,
-        mask: Iterable[Point] | None = None,
-    ) -> PartDetection:
-        name = SOURCE_CLASSES.get(source_class_id)
-        if name is None:
-            raise ValueError(f"Unknown v7 source class ID: {source_class_id}")
-        quality_id, region = map_part_category(name)
-        if not 0.0 <= confidence <= 1.0:
-            raise ValueError("Part confidence must be in [0, 1].")
-        if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
-            raise ValueError("Part bounding box must have positive area.")
-        return cls(
-            source_class_id=source_class_id,
-            source_class_name=name,
-            region=region,
-            grade=FINAL_CLASSES[quality_id],
-            confidence=float(confidence),
-            bbox=tuple(float(value) for value in bbox),  # type: ignore[arg-type]
-            mask=tuple(mask) if mask is not None else None,
-        )
-
-    @property
-    def center(self) -> Point:
-        return _center(self.bbox)
-
-    def to_dict(self) -> dict[str, object]:
-        payload = asdict(self)
-        payload["bbox"] = list(self.bbox)
-        payload["mask"] = [list(point) for point in self.mask] if self.mask else None
-        return payload
 
 
 @dataclass(frozen=True)

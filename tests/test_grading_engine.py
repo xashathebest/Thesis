@@ -11,7 +11,7 @@ import numpy as np
 from src.api.export import DEFAULT_EXPORT_FIELDS, inspection_row, make_csv, make_xlsx
 from src.api.domain import Detection, QualitySummary, TrackingConfig, TrackingManager
 from src.inference.grading_engine import GradingConfig, WeightedGradingEngine
-from src.inference.part_fusion import PartDetection
+from src.inference.part_types import PartDetection
 
 
 CLASS_IDS = {
@@ -63,6 +63,12 @@ class GradingEngineTests(unittest.TestCase):
         self.assertTrue(config.save_best_fish_crop)
         self.assertEqual(config.best_crop_directory, "results/crops")
 
+    def test_meaningful_unknown_or_conflicting_legacy_threshold_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            GradingConfig.from_mapping({"grading": {"final_verdict_threshold": .50, "final_verdict_threhsold": .40}})
+        with self.assertRaises(ValueError):
+            GradingConfig.from_mapping({"grading": {"final_verdict_threshold": .50, "minimum_final_score": .25}})
+
     def engine(self, **overrides: object) -> WeightedGradingEngine:
         return WeightedGradingEngine(GradingConfig(**overrides))
 
@@ -88,14 +94,14 @@ class GradingEngineTests(unittest.TestCase):
         self.assertAlmostEqual(verdict.weighted_scores["Class B"], .40)
         self.assertEqual(verdict.final_grade, "Class A")
 
-    def test_unknown_tail_is_renormalized_not_marked_missing(self) -> None:
+    def test_unknown_tail_keeps_fixed_weights_and_is_not_marked_physically_missing(self) -> None:
         verdict = self.engine().evaluate(10, crop(), [part("Body", "Class A", .60), part("Head", "Class A", .80)], stabilize=False)
         self.assertEqual(verdict.evidence_completeness, "partial")
-        self.assertAlmostEqual(verdict.part_results["Body"]["normalized_weight"], .625)
-        self.assertAlmostEqual(verdict.part_results["Head"]["normalized_weight"], .375)
+        self.assertAlmostEqual(verdict.part_results["Body"]["normalized_weight"], .50)
+        self.assertAlmostEqual(verdict.part_results["Head"]["normalized_weight"], .30)
         self.assertEqual(verdict.part_results["Tail"]["missing_status"], "unknown_not_observed")
         self.assertIsNone(verdict.part_results["Tail"]["physical_missing"])
-        self.assertAlmostEqual(verdict.weighted_scores["Class A"], .675)
+        self.assertAlmostEqual(verdict.weighted_scores["Class A"], .54)
 
     def test_low_confidence_or_no_body_returns_ungraded(self) -> None:
         low = self.engine().evaluate(1, crop(), [part("Body", "Class A", .20), part("Head", "Class A", .95)], stabilize=False)
@@ -105,18 +111,21 @@ class GradingEngineTests(unittest.TestCase):
 
     def test_configured_rejected_label_override_is_explicit(self) -> None:
         engine = self.engine(rejected_override_threshold=.90)
-        verdict = engine.evaluate(11, crop(), [part("Body", "Class A", .95), part("Body", "Rejected", .94)], stabilize=False)
+        verdict = engine.evaluate(11, crop(), [
+            part("Body", "Class A", .98), part("Head", "Class A", .98), part("Tail", "Class A", .98),
+            part("Body", "Rejected", .94),
+        ], stabilize=False)
         self.assertEqual(verdict.final_grade, "Rejected")
         self.assertTrue(verdict.override and verdict.override["applied"])
         self.assertEqual(verdict.override["source"], "Model 2 trained Rejected_* part label")
 
     def test_track_evidence_is_mean_of_nonduplicated_frame_scores(self) -> None:
-        engine = self.engine(minimum_track_observations=2)
+        engine = self.engine(minimum_track_observations=2, final_verdict_threshold=.25)
         first = engine.evaluate(44, crop(), [part("Body", "Class A", .55)], stabilize=True)
         second = engine.evaluate(44, crop(), [part("Body", "Class A", .65)], stabilize=True)
         self.assertIsNone(first.final_grade)
         self.assertEqual(second.final_grade, "Class A")
-        self.assertAlmostEqual(second.final_score or 0, .60)
+        self.assertAlmostEqual(second.final_score or 0, .30)
         # Another fish's evidence has its own Model 1 ID and cannot mix here.
         other = engine.evaluate(45, crop(), [part("Body", "Class B", .92)], stabilize=False)
         self.assertEqual(other.final_grade, "Class B")
@@ -141,8 +150,13 @@ class ExplainableExportTests(unittest.TestCase):
         row = inspection_row(event)
         self.assertAlmostEqual(float(row["final_weighted_score"]), 63.9)
         self.assertAlmostEqual(float(row["body_weighted_contribution"]), 29.5)
+        self.assertAlmostEqual(float(row["body_class_a_contribution"]), 29.5)
+        self.assertIn("model2_detector_threshold", row)
+        self.assertIn("part_evidence_threshold", row)
+        self.assertEqual(row["reason_codes"], "GR_CONFIDENT")
         csv_rows = list(csv.DictReader(StringIO(make_csv([event], DEFAULT_EXPORT_FIELDS).decode("utf-8-sig"))))
         self.assertEqual(csv_rows[0]["AI Final Grade"], "Class A")
+        self.assertEqual(csv_rows[0]["All Verdict Reason Codes"], "GR_CONFIDENT")
         workbook = make_xlsx([event], DEFAULT_EXPORT_FIELDS, {"Total Fish": 1}, verdict.to_dict().get("grading_config", {"part_weights": {"Body": .5, "Head": .3, "Tail": .2}}))
         from openpyxl import load_workbook
         loaded = load_workbook(BytesIO(workbook), data_only=True)

@@ -1,0 +1,4 @@
+# Retained non-runtime research adapters (RF-DETR) only.
+# The canonical dashboard does not install or invoke these dependencies.
+-r requirements.txt
+rfdetr[plus]>=1.10.1

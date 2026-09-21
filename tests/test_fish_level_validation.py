@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import unittest
 
+import numpy as np
+
 from src.evaluation.fish_level_validation import (
     EvaluationRules,
     FishLevelValidationError,
@@ -11,6 +13,21 @@ from src.evaluation.fish_level_validation import (
     evaluate_rule_configurations,
     recompute_final_verdict,
 )
+from src.inference.grading_engine import GradingConfig, WeightedGradingEngine
+from src.inference.part_types import PartDetection
+
+
+CLASS_IDS = {
+    ("Body", "Class A"): 0, ("Head", "Class A"): 1, ("Tail", "Class A"): 2,
+    ("Body", "Class B"): 3, ("Head", "Class B"): 4, ("Tail", "Class B"): 5,
+    ("Body", "Class C"): 6, ("Head", "Class C"): 7, ("Tail", "Class C"): 8,
+    ("Body", "Rejected"): 9, ("Head", "Rejected"): 10, ("Tail", "Rejected"): 11,
+}
+BOXES = {"Head": (1, 5, 15, 25), "Body": (15, 4, 45, 28), "Tail": (45, 6, 60, 24)}
+
+
+def part(region: str, grade: str, confidence: float) -> PartDetection:
+    return PartDetection.from_source_class(CLASS_IDS[(region, grade)], confidence, BOXES[region])
 
 
 def evidence(
@@ -98,9 +115,50 @@ class FishLevelValidationTests(unittest.TestCase):
         verdict = recompute_final_verdict(record, rules)
         self.assertEqual(verdict["final_grade"], "Ungraded")
         self.assertEqual(verdict["best_evidence_grade"], "Class A")
-        self.assertIn("MODEL_1_BELOW_THRESHOLD", verdict["reason_codes"])
+        self.assertIn("UG_PARENT_UNCERTAIN", verdict["reason_codes"])
         self.assertAlmostEqual(verdict["original_weight_coverage"], .50)
-        self.assertAlmostEqual(verdict["effective_weights"]["Body"], 1.0)
+        self.assertAlmostEqual(verdict["effective_weights"]["Body"], .50)
+
+    def test_runtime_and_offline_replay_share_the_exact_policy_result(self) -> None:
+        live = WeightedGradingEngine(GradingConfig(final_verdict_threshold=.50, minimum_grade_margin=.02))
+        image = np.full((32, 64, 3), (40, 120, 180), dtype=np.uint8)
+        runtime = live.evaluate(
+            7,
+            image,
+            [part("Body", "Class A", .82), part("Head", "Class A", .76), part("Tail", "Class A", .70)],
+            stabilize=False,
+        )
+        replay = recompute_final_verdict(
+            {"fish_id": "7", "true_grade": "Class A", "analysis": runtime.to_dict()},
+            EvaluationRules(final_verdict_threshold=.50, minimum_grade_margin=.02),
+        )
+        self.assertAlmostEqual(runtime.weighted_scores["Class A"], .778)
+        self.assertEqual(replay["weighted_scores"], runtime.weighted_scores)
+        self.assertEqual(replay["observed_regions"], list(runtime.observed_regions))
+        self.assertAlmostEqual(replay["evidence_coverage"], runtime.original_weight_coverage)
+        self.assertEqual(replay["top_grade"], runtime.provisional_grade)
+        self.assertAlmostEqual(replay["top_support"] or 0, runtime.provisional_score or 0)
+        self.assertEqual(replay["second_grade"], runtime.second_grade)
+        self.assertAlmostEqual(replay["grade_margin"] or 0, runtime.grade_margin or 0)
+        self.assertEqual(replay["final_grade"], runtime.final_grade or "Ungraded")
+        self.assertEqual(replay["reason_codes"], list(runtime.reason_codes))
+
+    def test_rule_mapping_rejects_meaningful_unknown_keys(self) -> None:
+        with self.assertRaises(FishLevelValidationError):
+            EvaluationRules.from_mapping({"final_verdict_threshold": .50, "final_verdict_threhsold": .40})
+
+    def test_rule_mapping_accepts_a_serialized_canonical_runtime_config(self) -> None:
+        runtime_config = GradingConfig(
+            final_verdict_threshold=.55,
+            minimum_track_observations=3,
+            temporal_evidence_limit=48,
+            minimum_grade_margin=.04,
+        )
+        replay_rules = EvaluationRules.from_mapping(runtime_config.to_dict())
+        self.assertAlmostEqual(replay_rules.final_verdict_threshold, .55)
+        self.assertEqual(replay_rules.minimum_track_observations, 3)
+        self.assertEqual(replay_rules.temporal_evidence_limit, 48)
+        self.assertAlmostEqual(replay_rules.minimum_grade_margin, .04)
 
     def test_rule_replay_requires_evidence_instead_of_reusing_old_grade(self) -> None:
         with self.assertRaises(FishLevelValidationError):

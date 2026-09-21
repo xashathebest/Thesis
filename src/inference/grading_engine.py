@@ -19,13 +19,27 @@ from typing import Iterable, Mapping
 import numpy as np
 
 from src.features.color import ColorSettings, extract_color_features
-from src.inference.part_fusion import PartDetection
+from src.inference.part_types import PartDetection
+from src.inference.grading_policy import (
+    GRADE_NAMES,
+    PART_NAMES,
+    FishGradingInput,
+    GradingPolicy,
+    UG_ASSOCIATION_AMBIGUOUS,
+    UG_FRAME_QUALITY,
+    UG_INSUFFICIENT_COVERAGE,
+    UG_INSUFFICIENT_REGIONS,
+    UG_LOW_GRADE_SUPPORT,
+    UG_LOW_MARGIN,
+    UG_MISSING_PART_EVIDENCE,
+    UG_MODEL2_UNAVAILABLE,
+    UG_OUT_OF_FRAME,
+    UG_PARENT_UNCERTAIN,
+    UG_TEMPORAL_EVIDENCE,
+    grade_fish,
+)
 from src.inference.preprocessing import clamp_bbox
-from src.preprocessing.dataset_utils import load_yaml_file, project_root
-
-
-GRADE_NAMES = ("Class A", "Class B", "Class C", "Rejected")
-PART_NAMES = ("Head", "Body", "Tail")
+from src.preprocessing.dataset_utils import project_root
 
 
 def _finite(value: object) -> float | None:
@@ -68,27 +82,30 @@ def _statistics(values: Iterable[object], *, eligible_frames: int) -> dict[str, 
 
 @dataclass(frozen=True)
 class GradingConfig:
-    """Validated operating rules for the explainable fish-level verdict.
+    """Runtime configuration, including the shared pure verdict policy.
 
-    Defaults are deliberately conservative only at the final verdict level.
-    Quality-frame thresholds default to ``None``/disabled, so introducing this
-    configuration does not silently discard ordinary evidence.
+    The image/temporal fields below control evidence collection.  The policy
+    fields are adapted into :class:`GradingPolicy` and are the exact same
+    values used by the offline replay module.
     """
 
-    config_version: str = "2.0"
+    config_version: str = "3.0"
     head_weight: float = 0.30
     body_weight: float = 0.50
     tail_weight: float = 0.20
     require_body: bool = True
     minimum_part_confidence: float = 0.25
-    # Legacy lower bound retained for older configuration files and API users.
-    minimum_final_score: float = 0.25
-    final_verdict_threshold: float = 0.50
+    # ``minimum_final_score`` is a deprecated alias, never an additional gate.
+    # ``None`` lets older callers supply only the alias without conflicting
+    # with the canonical default threshold.
+    minimum_final_score: float | None = None
+    final_verdict_threshold: float | None = None
     grading_mode: str = "standard"
     minimum_regions_observed: int = 1
     minimum_original_weight_coverage: float = 0.50
-    strict_minimum_regions_observed: int = 2
-    strict_minimum_original_weight_coverage: float = 0.70
+    strict_minimum_regions_observed: int = 3
+    strict_minimum_original_weight_coverage: float = 1.00
+    minimum_grade_margin: float = 0.0
     minimum_track_observations: int = 2
     temporal_evidence_limit: int = 120
     maximum_grade_stddev: float | None = None
@@ -118,26 +135,32 @@ class GradingConfig:
     best_crop_directory: str = "results/best_fish_crops"
 
     def __post_init__(self) -> None:
-        weights = (self.head_weight, self.body_weight, self.tail_weight)
-        if any(weight < 0 for weight in weights) or not math.isclose(sum(weights), 1.0, abs_tol=1e-9):
-            raise ValueError("Head, Body, and Tail grading weights must be non-negative and total 1.0.")
-        for name in (
-            "minimum_part_confidence",
-            "minimum_final_score",
-            "final_verdict_threshold",
-            "minimum_original_weight_coverage",
-            "strict_minimum_original_weight_coverage",
-        ):
-            value = _finite(getattr(self, name))
-            if value is None or not 0.0 <= value <= 1.0:
-                raise ValueError(f"{name} must be between 0 and 1.")
-        if self.grading_mode not in {"standard", "strict"}:
-            raise ValueError("grading_mode must be 'standard' or 'strict'.")
-        if self.minimum_regions_observed < 1 or self.strict_minimum_regions_observed < 1:
-            raise ValueError("Minimum region requirements must be positive.")
+        configured = self.final_verdict_threshold
+        legacy = self.minimum_final_score
+        if configured is None and legacy is None:
+            configured = 0.50
+        elif configured is None:
+            configured = legacy
+        elif legacy is not None:
+            canonical_number, legacy_number = _finite(configured), _finite(legacy)
+            if canonical_number is None or legacy_number is None or not math.isclose(canonical_number, legacy_number, abs_tol=1e-12):
+                raise ValueError(
+                    "minimum_final_score is a deprecated alias for final_verdict_threshold and cannot conflict with it."
+                )
+        if _finite(configured) is None:
+            raise ValueError("final_verdict_threshold must be between 0 and 1.")
+        object.__setattr__(self, "final_verdict_threshold", float(configured))
+        if legacy is not None:
+            legacy_number = _finite(legacy)
+            if legacy_number is None or not 0.0 <= legacy_number <= 1.0:
+                raise ValueError("minimum_final_score must be null or between 0 and 1.")
+            object.__setattr__(self, "minimum_final_score", float(legacy_number))
+
+        # Validate every verdict-affecting value in the shared policy object.
+        self.to_policy()
         if self.minimum_track_observations < 1 or self.temporal_evidence_limit < 1:
             raise ValueError("Temporal evidence limits must be positive.")
-        for name in ("rejected_override_threshold", "maximum_grade_stddev", "minimum_detection_confidence"):
+        for name in ("minimum_detection_confidence",):
             value = getattr(self, name)
             if value is not None and (_finite(value) is None or not 0.0 <= float(value) <= 1.0):
                 raise ValueError(f"{name} has an invalid value.")
@@ -160,34 +183,50 @@ class GradingConfig:
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, object]) -> "GradingConfig":
-        """Read the documented nested configuration and legacy flat layouts.
+        """Read documented nested or legacy-flat configuration without drops.
 
-        The production configuration is intentionally readable for operators:
-        part weights, temporal policy, frame quality, storage, and optional
-        adjustments live in their own sections.  Earlier deployments used a
-        flat file, however, so both forms remain valid and direct field values
-        take precedence over their nested counterparts.
+        A typo in an operating threshold must fail at startup rather than be
+        silently accepted and leave a different policy active.
         """
 
         if not isinstance(values, Mapping):
             raise ValueError("Grading configuration must be a mapping.")
         root = values
         nested = root.get("grading")
+        if nested is not None and not isinstance(nested, Mapping):
+            raise ValueError("grading must be a mapping.")
         source: Mapping[str, object] = nested if isinstance(nested, Mapping) else root
-        fields = cls.__dataclass_fields__
+        fields = set(cls.__dataclass_fields__)
+        nested_sections = {"weights", "temporal", "frame_quality", "best_frame", "storage", "rejected_override", "hsv_adjustment"}
+
+        def mapping(scope: Mapping[str, object], name: str) -> Mapping[str, object]:
+            value = scope.get(name)
+            if value is None:
+                return {}
+            if not isinstance(value, Mapping):
+                raise ValueError(f"{name} must be a mapping.")
+            return value
+
+        def reject_unknown(scope: Mapping[str, object], allowed: set[str], *, label: str) -> None:
+            unknown = sorted(str(key) for key in scope if key not in allowed)
+            if unknown:
+                raise ValueError(f"Unknown grading configuration key(s) in {label}: {', '.join(unknown)}.")
+
+        root_allowed = fields | nested_sections | {"grading"}
+        reject_unknown(root, root_allowed, label="root")
+        if source is not root:
+            reject_unknown(source, fields | nested_sections, label="grading")
+
         resolved: dict[str, object] = {}
 
-        def section(scope: Mapping[str, object], name: str) -> Mapping[str, object]:
-            value = scope.get(name)
-            return value if isinstance(value, Mapping) else {}
-
         def map_values(scope: Mapping[str, object]) -> None:
-            weights = section(scope, "weights")
+            weights = mapping(scope, "weights")
+            reject_unknown(weights, {"body", "head", "tail"}, label="weights")
             for region, field_name in (("body", "body_weight"), ("head", "head_weight"), ("tail", "tail_weight")):
                 if region in weights:
                     resolved[field_name] = weights[region]
 
-            temporal = section(scope, "temporal")
+            temporal = mapping(scope, "temporal")
             temporal_aliases = {
                 "minimum_valid_frames": "minimum_track_observations",
                 "minimum_track_observations": "minimum_track_observations",
@@ -195,41 +234,84 @@ class GradingConfig:
                 "maximum_grade_stddev": "maximum_grade_stddev",
                 "use_frame_quality_filter": "use_frame_quality_filter",
             }
+            reject_unknown(temporal, set(temporal_aliases), label="temporal")
             for nested_name, field_name in temporal_aliases.items():
                 if nested_name in temporal:
                     resolved[field_name] = temporal[nested_name]
 
-            for nested_name in ("frame_quality", "best_frame"):
-                for field_name, value in section(scope, nested_name).items():
-                    if field_name in fields:
-                        resolved[field_name] = value
+            frame_quality_fields = {
+                "use_frame_quality_filter",
+                "minimum_detection_confidence",
+                "minimum_crop_width",
+                "minimum_crop_height",
+                "minimum_crop_area",
+                "reject_clipped_crops",
+                "sharpness_filter_enabled",
+                "minimum_sharpness",
+            }
+            frame_quality = mapping(scope, "frame_quality")
+            reject_unknown(frame_quality, frame_quality_fields, label="frame_quality")
+            resolved.update({key: value for key, value in frame_quality.items()})
 
-            storage = section(scope, "storage")
-            for field_name in ("save_best_fish_crop", "save_annotated_best_fish_crop", "best_crop_directory"):
-                if field_name in storage:
-                    resolved[field_name] = storage[field_name]
+            best_frame_fields = {
+                "best_frame_detection_weight",
+                "best_frame_area_weight",
+                "best_frame_sharpness_weight",
+                "best_frame_region_weight",
+                "best_frame_area_reference",
+                "best_frame_sharpness_reference",
+                "best_frame_only_usable",
+                "best_frame_clipped_penalty",
+            }
+            best_frame = mapping(scope, "best_frame")
+            reject_unknown(best_frame, best_frame_fields, label="best_frame")
+            resolved.update({key: value for key, value in best_frame.items()})
 
-            rejected_override = section(scope, "rejected_override")
+            storage_fields = {"save_best_fish_crop", "save_annotated_best_fish_crop", "best_crop_directory"}
+            storage = mapping(scope, "storage")
+            reject_unknown(storage, storage_fields, label="storage")
+            resolved.update({key: value for key, value in storage.items()})
+
+            rejected_override = mapping(scope, "rejected_override")
+            reject_unknown(rejected_override, {"enabled", "threshold"}, label="rejected_override")
             if "threshold" in rejected_override:
                 resolved["rejected_override_threshold"] = rejected_override["threshold"]
             if rejected_override.get("enabled") is False:
                 resolved["rejected_override_threshold"] = None
 
-            hsv_adjustment = section(scope, "hsv_adjustment")
+            hsv_adjustment = mapping(scope, "hsv_adjustment")
+            reject_unknown(hsv_adjustment, {"enabled"}, label="hsv_adjustment")
             if "enabled" in hsv_adjustment:
                 resolved["color_adjustments_enabled"] = hsv_adjustment["enabled"]
 
-        # Root-level operational sections (storage/HSV) remain useful when
-        # ``grading`` is used only for rule settings. The nested section then
-        # takes precedence when it provides the same key.
+            for field_name in fields:
+                if field_name in scope:
+                    resolved[field_name] = scope[field_name]
+
+        # Root-level operational sections are retained for legacy config
+        # layouts; the explicit ``grading`` section overrides the root values.
         map_values(root)
         if source is not root:
             map_values(source)
 
-        for scope in (root, source):
-            for field_name in fields:
-                if field_name in scope:
-                    resolved[field_name] = scope[field_name]
+        def values_for(name: str) -> list[float]:
+            result: list[float] = []
+            for scope in (root, source) if source is not root else (root,):
+                if name in scope:
+                    value = _finite(scope[name])
+                    if value is None:
+                        raise ValueError(f"{name} must be a finite value.")
+                    result.append(value)
+            return result
+
+        canonical_values = values_for("final_verdict_threshold")
+        legacy_values = values_for("minimum_final_score")
+        if len(set(canonical_values)) > 1 or len(set(legacy_values)) > 1:
+            raise ValueError("Conflicting final verdict threshold values were supplied.")
+        if canonical_values and legacy_values and not math.isclose(canonical_values[-1], legacy_values[-1], abs_tol=1e-12):
+            raise ValueError(
+                "minimum_final_score is deprecated and conflicts with final_verdict_threshold; use final_verdict_threshold only."
+            )
         return cls(**resolved)  # type: ignore[arg-type]
 
     def weight(self, region: str) -> float:
@@ -242,7 +324,25 @@ class GradingConfig:
         return self.strict_minimum_original_weight_coverage if self.grading_mode == "strict" else self.minimum_original_weight_coverage
 
     def active_final_threshold(self) -> float:
-        return max(self.minimum_final_score, self.final_verdict_threshold)
+        return float(self.final_verdict_threshold)
+
+    def to_policy(self) -> GradingPolicy:
+        return GradingPolicy(
+            body_weight=self.body_weight,
+            head_weight=self.head_weight,
+            tail_weight=self.tail_weight,
+            require_body=self.require_body,
+            minimum_part_confidence=self.minimum_part_confidence,
+            final_verdict_threshold=float(self.final_verdict_threshold),
+            grading_mode=self.grading_mode,
+            minimum_regions_observed=self.minimum_regions_observed,
+            minimum_original_weight_coverage=self.minimum_original_weight_coverage,
+            strict_minimum_regions_observed=self.strict_minimum_regions_observed,
+            strict_minimum_original_weight_coverage=self.strict_minimum_original_weight_coverage,
+            minimum_grade_margin=self.minimum_grade_margin,
+            rejected_override_threshold=self.rejected_override_threshold,
+            maximum_grade_stddev=self.maximum_grade_stddev,
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -251,6 +351,7 @@ class GradingConfig:
             "require_body": self.require_body,
             "minimum_part_confidence": self.minimum_part_confidence,
             "minimum_final_score": self.minimum_final_score,
+            "deprecated_minimum_final_score_used": self.minimum_final_score is not None,
             "final_verdict_threshold": self.final_verdict_threshold,
             "active_final_verdict_threshold": self.active_final_threshold(),
             "grading_mode": self.grading_mode,
@@ -258,6 +359,7 @@ class GradingConfig:
             "minimum_original_weight_coverage": self.active_minimum_coverage(),
             "strict_minimum_regions_observed": self.strict_minimum_regions_observed,
             "strict_minimum_original_weight_coverage": self.strict_minimum_original_weight_coverage,
+            "minimum_grade_margin": self.minimum_grade_margin,
             "minimum_track_observations": self.minimum_track_observations,
             "temporal_evidence_limit": self.temporal_evidence_limit,
             "maximum_grade_stddev": self.maximum_grade_stddev,
@@ -292,9 +394,18 @@ class GradingConfig:
 
 def load_grading_config(path: Path | None = None) -> GradingConfig:
     config_path = path or project_root() / "configs" / "grading_engine.yaml"
-    values = load_yaml_file(config_path)
+    if not config_path.exists():
+        raise FileNotFoundError(f"Grading configuration is missing or empty: {config_path}")
+    try:
+        import yaml
+    except ImportError as exc:  # PyYAML is already a project dependency via model tooling.
+        raise RuntimeError("PyYAML is required to load nested grading configuration.") from exc
+    with config_path.open("r", encoding="utf-8") as handle:
+        values = yaml.safe_load(handle)
     if not values:
         raise FileNotFoundError(f"Grading configuration is missing or empty: {config_path}")
+    if not isinstance(values, Mapping):
+        raise ValueError(f"Grading configuration must be a mapping: {config_path}")
     return GradingConfig.from_mapping(values)
 
 
@@ -316,6 +427,13 @@ class _TrackEvidence:
     rejected_reason_counts: Counter[str] = field(default_factory=Counter)
     latest_frame_quality: dict[str, object] = field(default_factory=dict)
     best_frame: dict[str, object] | None = None
+    parent_uncertain: bool = False
+    association_ambiguous: bool = False
+    out_of_frame: bool = False
+    # Set after a real Model 2 attempt. Until then a no-evidence verdict can
+    # distinguish an unavailable detector from an available detector that saw
+    # no reliable part boxes.
+    model2_available: bool = False
 
 
 @dataclass(frozen=True)
@@ -325,6 +443,9 @@ class FishVerdict:
     fish_id: int
     provisional_grade: str | None
     provisional_score: float | None
+    second_grade: str | None
+    second_score: float | None
+    grade_margin: float | None
     final_grade: str | None
     final_score: float | None
     weighted_scores: dict[str, float]
@@ -337,6 +458,7 @@ class FishVerdict:
     candidate_frame_count: int
     verdict_status: str
     verdict_reason_code: str
+    reason_codes: tuple[str, ...]
     verdict_reason_text: str
     temporal_stability: dict[str, object]
     frame_quality: dict[str, object]
@@ -354,8 +476,14 @@ class FishVerdict:
             "provisional_score": self.provisional_score,
             "best_evidence_class": self.provisional_grade,
             "best_evidence_score": self.provisional_score,
+            "top_grade": self.provisional_grade,
+            "top_support": self.provisional_score,
+            "second_grade": self.second_grade,
+            "second_support": self.second_score,
+            "grade_margin": self.grade_margin,
             "final_grade": self.final_grade or "Ungraded",
             "final_score": self.final_score,
+            "final_support": self.final_score,
             "weighted_scores": dict(self.weighted_scores),
             "part_results": {region: dict(result) for region, result in self.part_results.items()},
             "observed_regions": list(self.observed_regions),
@@ -365,9 +493,11 @@ class FishVerdict:
             "evidence_completeness": self.evidence_completeness,
             "observation_count": self.observation_count,
             "candidate_frame_count": self.candidate_frame_count,
+            "model2_available": self.frame_quality.get("model2_available", True),
             "aggregation_method": "highest Model 2 confidence per region/grade per usable frame; arithmetic mean over observed frames",
             "verdict_status": self.verdict_status,
             "verdict_reason_code": self.verdict_reason_code,
+            "reason_codes": list(self.reason_codes),
             "verdict_reason_text": self.verdict_reason_text,
             "temporal_stability": dict(self.temporal_stability),
             "frame_quality": dict(self.frame_quality),
@@ -517,6 +647,38 @@ class WeightedGradingEngine:
             return "not_detected"
         return "unknown"
 
+    def _policy_reason_text(
+        self,
+        reason_codes: tuple[str, ...],
+        support: float | None,
+        margin: float | None,
+    ) -> str:
+        """Human-readable context; structured codes remain the authority."""
+
+        messages = {
+            UG_PARENT_UNCERTAIN: "The Model 1 parent-fish evidence is uncertain, so no verdict was issued.",
+            UG_ASSOCIATION_AMBIGUOUS: "Model 2 part-to-parent association is ambiguous, so no verdict was issued.",
+            UG_MISSING_PART_EVIDENCE: "Required Body evidence was not reliably observed; this is not a physical missing-part claim.",
+            UG_MODEL2_UNAVAILABLE: "Model 2 produced no reliable Head, Body, or Tail evidence.",
+            UG_OUT_OF_FRAME: "Reliable part evidence may have been lost because a crop touched a frame boundary.",
+            UG_FRAME_QUALITY: "No candidate crop passed the configured frame-quality gate.",
+            UG_INSUFFICIENT_REGIONS: f"Fewer than {self.config.active_minimum_regions()} reliable regions were observed.",
+            UG_INSUFFICIENT_COVERAGE: (
+                f"Reliable original anatomy-weight coverage was below {self.config.active_minimum_coverage() * 100:.2f}%.") ,
+            UG_TEMPORAL_EVIDENCE: f"At least {self.config.minimum_track_observations} usable tracked observations are required.",
+            UG_LOW_GRADE_SUPPORT: (
+                f"Highest weighted grade support was {(support or 0.0) * 100:.2f}%, below the "
+                f"{self.config.active_final_threshold() * 100:.2f}% final verdict threshold."),
+            UG_LOW_MARGIN: (
+                f"Top-versus-second grade margin was {(margin or 0.0) * 100:.2f}%, below the "
+                f"{self.config.minimum_grade_margin * 100:.2f}% configured minimum."),
+        }
+        if reason_codes == ("GR_CONFIDENT",):
+            return f"The top weighted grade passed all evidence gates with {(support or 0.0) * 100:.2f}% support."
+        if reason_codes == ("RJ_GRADE_EVIDENCE",):
+            return f"Rejected won the same weighted Model 2 evidence policy with {(support or 0.0) * 100:.2f}% support."
+        return " ".join(messages.get(code, code) for code in reason_codes)
+
     def _aggregate(
         self,
         fish_id: int,
@@ -527,6 +689,10 @@ class WeightedGradingEngine:
         rejected_reason_counts: Mapping[str, int],
         latest_frame_quality: Mapping[str, object] | None,
         best_frame: Mapping[str, object] | None,
+        parent_usable: bool = True,
+        association_status: str | None = None,
+        out_of_frame: bool = False,
+        model2_available: bool = True,
     ) -> FishVerdict:
         usable_count = len(evidence)
         aggregate_scores = {region: _empty_scores() for region in PART_NAMES}
@@ -543,20 +709,52 @@ class WeightedGradingEngine:
             colors[region] = self._aggregate_color(frame.colors[region] for frame in evidence)
         colors["Whole Fish"] = self._aggregate_color(frame.colors["Whole Fish"] for frame in evidence)
 
-        available = [region for region in PART_NAMES if presence[region] >= self.config.minimum_part_confidence]
+        rejected_keys = {str(reason).lower() for reason in rejected_reason_counts}
+        inferred_out_of_frame = out_of_frame or any("clipp" in reason or "out_of_frame" in reason for reason in rejected_keys)
+        policy = self.config.to_policy()
+        decision = grade_fish(
+            FishGradingInput(
+                part_scores=aggregate_scores,
+                presence_confidence=presence,
+                observation_count=usable_count,
+                temporal_ready=temporal_ready,
+                parent_usable=parent_usable,
+                association_status=association_status,
+                model2_available=model2_available,
+                frame_quality_rejected=usable_count == 0 and candidate_frame_count > 0,
+                out_of_frame=inferred_out_of_frame,
+            ),
+            policy,
+        )
+        available = list(decision.observed_regions)
         available_set = set(available)
-        original_weight_coverage = sum(self.config.weight(region) for region in available)
-        normalized_weights_all = {
-            region: (self.config.weight(region) / original_weight_coverage if region in available_set and original_weight_coverage else 0.0)
-            for region in PART_NAMES
-        }
-        effective_weights = {region: normalized_weights_all[region] for region in available}
-        weighted = {
-            grade: sum(aggregate_scores[region][grade] * normalized_weights_all[region] for region in PART_NAMES)
-            for grade in GRADE_NAMES
-        }
-        provisional = max(GRADE_NAMES, key=lambda grade: (weighted[grade], -GRADE_NAMES.index(grade))) if available else None
-        provisional_score = weighted[provisional] if provisional else None
+        original_weight_coverage = decision.evidence_coverage
+        # Retained legacy field names now contain fixed original weights. They
+        # are deliberately never renormalized across the observed regions.
+        normalized_weights_all = dict(decision.effective_weights)
+        effective_weights = dict(decision.effective_weights)
+        weighted = dict(decision.weighted_scores)
+        provisional = decision.top_grade
+        provisional_score = decision.top_support
+
+        latest_quality = dict(latest_frame_quality or {})
+        parent_frame_clipped = bool(
+            latest_quality.get("parent_frame_clipped", latest_quality.get("frame_clipped", False))
+        )
+        parent_crop_clipped = bool(
+            latest_quality.get("parent_crop_clipped", latest_quality.get("crop_clipped", False))
+        )
+
+        def visibility_for(status: str, *, observed: bool) -> str:
+            if observed:
+                return "PRESENT"
+            if parent_frame_clipped:
+                return "PARENT_FRAME_CLIPPED"
+            if parent_crop_clipped or status == "frame_clipped":
+                return "PARENT_CROP_CLIPPED"
+            if status in {"below_threshold", "not_detected"}:
+                return "NOT_DETECTED"
+            return "UNKNOWN"
 
         part_results: dict[str, dict[str, object]] = {}
         for region in PART_NAMES:
@@ -580,6 +778,7 @@ class WeightedGradingEngine:
                 "present": region in available_set,
                 "status": status,
                 "observation_status": status,
+                "visibility_state": visibility_for(status, observed=region in available_set),
                 "presence_confidence": presence[region],
                 "grade": part_grade,
                 "grade_confidence": aggregate_scores[region][part_grade] if part_grade else None,
@@ -630,86 +829,47 @@ class WeightedGradingEngine:
             "rejected_frame_count": max(0, candidate_frame_count - usable_count),
             "rejected_reason_counts": dict(rejected_reason_counts),
             "latest": dict(latest_frame_quality or {}),
+            "model2_available": model2_available,
+            "parent_usable": parent_usable,
+            "association_status": association_status,
+            "out_of_frame": inferred_out_of_frame,
         }
 
-        # Evidence gates are evaluated in a deterministic order so every fish
-        # has one concise reason code rather than a misleading arbitrary grade.
-        threshold = self.config.active_final_threshold()
-        base_evidence_ok = bool(available)
-        verdict_status = "NEEDS_REVIEW"
-        reason_code = "MODEL_2_NO_VALID_RESULT"
-        reason_text = "Model 2 produced no valid Head, Body, or Tail evidence in usable fish crops."
-        if not temporal_ready:
-            reason_code = "UNSTABLE_TEMPORAL_EVIDENCE"
-            reason_text = (
-                f"Only {usable_count} usable tracked frame{' was' if usable_count == 1 else 's were'} available; "
-                f"{self.config.minimum_track_observations} are required before a live verdict."
-            )
-        elif not available:
-            if usable_count == 0 and candidate_frame_count:
-                reason_text = "No candidate fish crop passed the configured frame-quality filter, so Model 2 evidence was not added."
-            else:
-                reason_text = "Model 2 produced no valid Head, Body, or Tail evidence above the configured evidence threshold."
-        elif self.config.require_body and "Body" not in available_set:
-            reason_code = "BODY_NOT_OBSERVED"
-            reason_text = "Body evidence is required but was not confidently observed; this is not a physical missing-part claim."
-            base_evidence_ok = False
-        elif len(available) < self.config.active_minimum_regions():
-            reason_code = "NOT_ENOUGH_REGIONS"
-            reason_text = (
-                f"{len(available)} confident region(s) were observed, below the active {self.config.active_minimum_regions()}-region requirement."
-            )
-            base_evidence_ok = False
-        elif original_weight_coverage < self.config.active_minimum_coverage():
-            reason_code = "INSUFFICIENT_REGION_COVERAGE"
-            reason_text = (
-                f"Original evidence coverage was {original_weight_coverage * 100:.2f}%, below the active "
-                f"{self.config.active_minimum_coverage() * 100:.2f}% requirement."
-            )
-            base_evidence_ok = False
-        elif self.config.maximum_grade_stddev is not None and max_winner_stddev is not None and max_winner_stddev > self.config.maximum_grade_stddev:
-            reason_code = "UNSTABLE_TEMPORAL_EVIDENCE"
-            reason_text = (
-                f"Winning-grade regional temporal standard deviation was {max_winner_stddev * 100:.2f}%, above the configured "
-                f"{self.config.maximum_grade_stddev * 100:.2f}% limit."
-            )
-            base_evidence_ok = False
-        elif provisional_score is None or provisional_score < threshold:
-            reason_code = "LOW_FINAL_SUPPORT"
-            support = (provisional_score or 0.0) * 100
-            reason_text = f"Highest weighted grade support was {support:.2f}%, below the active {threshold * 100:.2f}% final verdict threshold."
-            base_evidence_ok = True
-        else:
-            verdict_status = "AUTO_GRADED"
-            reason_code = "AUTO_GRADED"
-            reason_text = f"{provisional} has {provisional_score * 100:.2f}% weighted support and passed the active evidence requirements."
-            base_evidence_ok = True
-
-        final_grade: str | None = provisional if verdict_status == "AUTO_GRADED" else None
-        final_score: float | None = provisional_score if final_grade else None
-        override: dict[str, object] | None = None
-        # A configured override can choose a real trained Rejected label only
-        # after the normal body/coverage/temporal gates have passed. It is off
-        # by default and never converts ordinary uncertainty into Rejected.
-        if self.config.rejected_override_threshold is not None and temporal_ready and base_evidence_ok:
-            rejected_parts = [
-                (region, aggregate_scores[region]["Rejected"])
-                for region in available
-                if aggregate_scores[region]["Rejected"] >= self.config.rejected_override_threshold
-            ]
-            if rejected_parts:
-                region, confidence = max(rejected_parts, key=lambda item: item[1])
-                final_grade, final_score = "Rejected", weighted["Rejected"]
-                verdict_status, reason_code = "AUTO_GRADED", "REJECTED_OVERRIDE"
-                reason_text = f"Configured Rejected override: {region} Rejected evidence met the approved threshold."
-                override = {
-                    "applied": True,
-                    "source": "Model 2 trained Rejected_* part label",
-                    "region": region,
-                    "confidence": confidence,
-                    "configured_threshold": self.config.rejected_override_threshold,
-                    "reason": reason_text,
-                }
+        # Runtime aggregation is complete above; the shared pure policy now
+        # makes the final decision just as offline replay does.
+        decision = grade_fish(
+            FishGradingInput(
+                part_scores=aggregate_scores,
+                presence_confidence=presence,
+                observation_count=usable_count,
+                temporal_ready=temporal_ready,
+                parent_usable=parent_usable,
+                association_status=association_status,
+                frame_quality_rejected=usable_count == 0 and candidate_frame_count > 0,
+                out_of_frame=inferred_out_of_frame,
+                model2_available=model2_available,
+                temporal_grade_stddev=max_winner_stddev,
+            ),
+            policy,
+        )
+        available = list(decision.observed_regions)
+        available_set = set(available)
+        original_weight_coverage = decision.evidence_coverage
+        normalized_weights_all = dict(decision.effective_weights)
+        effective_weights = dict(decision.effective_weights)
+        weighted = dict(decision.weighted_scores)
+        provisional = decision.top_grade
+        provisional_score = decision.top_support
+        final_grade = decision.final_grade
+        final_score = decision.final_support
+        verdict_status = decision.verdict_status
+        reason_code = decision.reason_codes[0]
+        reason_text = self._policy_reason_text(decision.reason_codes, decision.top_support, decision.grade_margin)
+        override = decision.override
+        for region in PART_NAMES:
+            part_results[region]["normalized_weight"] = decision.effective_weights[region]
+            part_results[region]["effective_weight"] = decision.effective_weights[region]
+            part_results[region]["contributions"] = dict(decision.contributions[region])
 
         explanations: list[str] = []
         if available:
@@ -717,14 +877,14 @@ class WeightedGradingEngine:
                 "Observed regions: " + ", ".join(available) + f"; original evidence coverage {original_weight_coverage * 100:.2f}%."
             )
             if len(available) < len(PART_NAMES):
-                explanations.append("Only observed region weights were renormalized for the calculation; unobserved regions remain unknown.")
+                explanations.append("Unobserved region contributions are zero; original part weights are never renormalized.")
             if provisional is not None:
                 for region in available:
                     contributions = part_results[region].get("contributions")
                     contribution = contributions.get(provisional) if isinstance(contributions, dict) else 0.0
                     explanations.append(
                         f"{region}: {provisional} evidence {aggregate_scores[region][provisional] * 100:.2f}% × "
-                        f"effective weight {normalized_weights_all[region] * 100:.2f}% = {float(contribution) * 100:.2f}% contribution."
+                        f"original weight {normalized_weights_all[region] * 100:.2f}% = {float(contribution) * 100:.2f}% contribution."
                     )
                 explanations.append(f"Best weighted evidence: {provisional} {provisional_score * 100:.2f}%.")
         else:
@@ -738,6 +898,9 @@ class WeightedGradingEngine:
             fish_id=fish_id,
             provisional_grade=provisional,
             provisional_score=provisional_score,
+            second_grade=decision.second_grade,
+            second_score=decision.second_support,
+            grade_margin=decision.grade_margin,
             final_grade=final_grade,
             final_score=final_score,
             weighted_scores=weighted,
@@ -750,6 +913,7 @@ class WeightedGradingEngine:
             candidate_frame_count=candidate_frame_count,
             verdict_status=verdict_status,
             verdict_reason_code=reason_code,
+            reason_codes=decision.reason_codes,
             verdict_reason_text=reason_text,
             temporal_stability=temporal_stability,
             frame_quality=frame_quality,
@@ -771,6 +935,9 @@ class WeightedGradingEngine:
         frame_id: int | str | None = None,
         frame_quality: Mapping[str, object] | None = None,
         best_frame: Mapping[str, object] | None = None,
+        parent_usable: bool | None = None,
+        association_status: str | None = None,
+        model2_available: bool = True,
     ) -> FishVerdict:
         """Add one usable candidate crop (or explain why it was excluded).
 
@@ -780,8 +947,28 @@ class WeightedGradingEngine:
         """
 
         quality_payload = dict(frame_quality or {})
+        if not isinstance(model2_available, bool):
+            raise ValueError("model2_available must be a boolean.")
+        quality_payload["model2_available"] = model2_available
         evaluation_started = perf_counter()
         usable = bool(quality_payload.get("usable", True))
+        inferred_parent_usable = (
+            bool(parent_usable)
+            if parent_usable is not None
+            else not bool(quality_payload.get("parent_uncertain", False))
+            and bool(quality_payload.get("parent_usable", True))
+        )
+        inferred_association_status = association_status
+        if inferred_association_status is None:
+            inferred_association_status = str(quality_payload.get("association_status") or "") or None
+        if bool(quality_payload.get("association_ambiguous", False)):
+            inferred_association_status = "ambiguous"
+        inferred_out_of_frame = bool(
+            quality_payload.get("out_of_frame", False)
+            or quality_payload.get("parent_frame_clipped", False)
+            or quality_payload.get("parent_crop_clipped", False)
+            or quality_payload.get("crop_clipped", False)
+        )
         frame = self._frame_evidence(crop_bgr, parts, frame_id=frame_id, frame_quality=quality_payload)
         reasons = quality_payload.get("reasons", ())
         rejection_reasons = [str(reason) for reason in reasons] if isinstance(reasons, (list, tuple, set)) else []
@@ -795,6 +982,10 @@ class WeightedGradingEngine:
                 rejected_reason_counts=Counter(rejection_reasons) if not usable else Counter(),
                 latest_frame_quality=quality_payload,
                 best_frame=best_frame,
+                parent_usable=inferred_parent_usable,
+                association_status=inferred_association_status,
+                out_of_frame=inferred_out_of_frame,
+                model2_available=model2_available,
             )
             self.last_evaluation_seconds = perf_counter() - evaluation_started
             return result
@@ -804,6 +995,12 @@ class WeightedGradingEngine:
             track.best_frame = dict(best_frame)
         track.candidate_frame_count += 1
         track.latest_frame_quality = quality_payload
+        track.parent_uncertain = track.parent_uncertain or not inferred_parent_usable
+        track.association_ambiguous = track.association_ambiguous or (
+            str(inferred_association_status or "").strip().lower() in {"ambiguous", "association_ambiguous"}
+        )
+        track.out_of_frame = track.out_of_frame or inferred_out_of_frame
+        track.model2_available = track.model2_available or model2_available
         if usable:
             track.usable_frames.append(frame)
         else:
@@ -816,6 +1013,10 @@ class WeightedGradingEngine:
             rejected_reason_counts=track.rejected_reason_counts,
             latest_frame_quality=track.latest_frame_quality,
             best_frame=track.best_frame,
+            parent_usable=not track.parent_uncertain,
+            association_status="ambiguous" if track.association_ambiguous else None,
+            out_of_frame=track.out_of_frame,
+            model2_available=track.model2_available,
         )
         self.last_evaluation_seconds = perf_counter() - evaluation_started
         return result

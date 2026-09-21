@@ -1,4 +1,4 @@
-"""Local RF-DETR segmentation adapter for Model 2 fish quality evidence.
+"""Retained RF-DETR segmentation research adapter, not canonical Model 2.
 
 The adapter accepts an in-memory OpenCV fish crop, invokes the official
 RF-DETR segmentation API, and returns only compact application data.  It has

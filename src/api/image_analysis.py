@@ -11,7 +11,7 @@ import numpy as np
 
 from src.inference.yolo_fish_detector import FishDetection, YoloFishDetector
 from src.inference.yolo_quality_model import FishQualityObservation, YoloQualityModel
-from src.inference.part_fusion import PartDetection
+from src.inference.part_types import PartDetection
 from src.inference.part_model import YoloPartModel
 from src.inference.preprocessing import (
     CropBounds,

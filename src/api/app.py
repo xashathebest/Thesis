@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import os
 import json
+import hashlib
+import logging
+from pathlib import Path
+import subprocess
 from contextlib import asynccontextmanager
 from datetime import datetime
 from time import sleep
@@ -13,9 +17,11 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.api.camera import CameraInspectionService
+from src.api.camera_controls import CAMERA_PROPERTIES, CameraControlError
+from src.api.database import InspectionDatabase, InspectionSessionContext, grading_config_hash
 from src.api.image_analysis import ImageUploadError, PartPreviewImageAnalyzer, StillImageAnalyzer, decode_uploaded_image
-from src.api.domain import FEATURE_CAPABILITIES, InspectionState, TrackingConfig
-from src.api.export import DEFAULT_EXPORT_FIELDS, EXPORT_FIELDS, filter_events, make_csv, make_xlsx
+from src.api.domain import FEATURE_CAPABILITIES, QUALITY_COUNTER_NAMES, InspectionState, TrackingConfig
+from src.api.export import DEFAULT_EXPORT_FIELDS, EXPORT_FIELDS, make_csv, make_xlsx
 from src.api.runtime import PART_PREVIEW_MODE, resolve_part_weights_path, resolve_runtime_mode
 from src.inference.yolo_fish_detector import YoloFishDetector, resolve_yolo_fish_detector_model_path
 from src.inference.yolo_quality_model import YoloQualityModel, resolve_yolo_quality_model_path
@@ -25,6 +31,7 @@ from src.preprocessing.dataset_utils import load_yaml_file, project_root
 
 REPO_ROOT = project_root()
 FRONTEND_DIR = REPO_ROOT / "frontend"
+LOGGER = logging.getLogger(__name__)
 PART_CONFIG = load_yaml_file(REPO_ROOT / "configs" / "yolov8.yaml")
 FISH_DETECTION_CONFIDENCE = float(os.getenv("FISH_DETECTION_CONFIDENCE", "0.5"))
 FISH_DETECTOR_DEVICE = os.getenv("FISH_DETECTOR_DEVICE", "auto")
@@ -36,6 +43,7 @@ FISH_QUALITY_PATH = resolve_yolo_quality_model_path(REPO_ROOT, os.getenv("FISH_Q
 FISH_QUALITY_IMAGE_SIZE = int(os.getenv("FISH_QUALITY_IMAGE_SIZE", "640"))
 FISH_QUALITY_INTERVAL = int(os.getenv("FISH_QUALITY_INTERVAL", os.getenv("FISH_SEGMENTATION_INTERVAL", "3")))
 FISH_QUALITY_ROI_PADDING = int(os.getenv("FISH_QUALITY_ROI_PADDING", os.getenv("FISH_SEGMENTATION_ROI_PADDING", "0")))
+FISH_QUALITY_INFERENCE_MODE = os.getenv("FISH_QUALITY_INFERENCE_MODE", "crop").strip().lower()
 FISH_UPLOAD_MAX_BYTES = int(os.getenv("FISH_UPLOAD_MAX_BYTES", str(10 * 1024 * 1024)))
 FISH_UPLOAD_MAX_DIMENSION = int(os.getenv("FISH_UPLOAD_MAX_DIMENSION", "4096"))
 FISH_UPLOAD_MAX_PIXELS = int(os.getenv("FISH_UPLOAD_MAX_PIXELS", str(16 * 1024 * 1024)))
@@ -75,19 +83,178 @@ else:
         confidence_threshold=FISH_QUALITY_CONFIDENCE,
         device=FISH_QUALITY_DEVICE,
         image_size=FISH_QUALITY_IMAGE_SIZE,
+        quality_inference_mode=FISH_QUALITY_INFERENCE_MODE,
+        roi_padding=FISH_QUALITY_ROI_PADDING,
     )
 service = CameraInspectionService(
     state, model, camera_index=CAMERA_INDEX, runtime_mode=RUNTIME_MODE,
     quality_model=quality_model, quality_interval=FISH_QUALITY_INTERVAL,
     quality_roi_padding=FISH_QUALITY_ROI_PADDING,
+    quality_inference_mode=FISH_QUALITY_INFERENCE_MODE,
+    camera_profile_path=REPO_ROOT / "configs" / "camera_settings.yaml",
 )
 image_analyzer = StillImageAnalyzer(model, quality_model, roi_padding=FISH_QUALITY_ROI_PADDING) if RUNTIME_MODE != PART_PREVIEW_MODE else None
 upload_test_model = YoloPartModel(UPLOAD_TEST_WEIGHTS_PATH, confidence=UPLOAD_TEST_CONFIDENCE, imgsz=PART_IMAGE_SIZE) if RUNTIME_MODE == PART_PREVIEW_MODE else None
 upload_test_analyzer = PartPreviewImageAnalyzer(upload_test_model) if upload_test_model is not None else None
+_database_setting = os.getenv("FISH_INSPECTION_DB_PATH")
+INSPECTION_DATABASE_PATH = (Path(_database_setting) if _database_setting else REPO_ROOT / "results" / "inspection_history.sqlite3").resolve()
+inspection_database = InspectionDatabase(INSPECTION_DATABASE_PATH)
+inspection_sessions = InspectionSessionContext(inspection_database)
+
+
+def _checkpoint_sha256(path: object, fallback: object = None) -> str | None:
+    """Calculate a full checkpoint fingerprint once per session when possible."""
+
+    try:
+        checkpoint = Path(path) if path is not None else None
+        if checkpoint is None or not checkpoint.is_file():
+            return str(fallback) if fallback else None
+        digest = hashlib.sha256()
+        with checkpoint.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return str(fallback) if fallback else None
+
+
+def _git_commit() -> str | None:
+    """Best-effort source revision without requiring Git for ordinary startup."""
+
+    try:
+        result = subprocess.run(
+            ["git", "-c", f"safe.directory={REPO_ROOT}", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else None
+
+
+def _camera_settings_snapshot() -> dict[str, object]:
+    """Capture accepted camera values only; unavailable hardware remains explicit."""
+
+    try:
+        status = service.camera_status()
+    except Exception as exc:  # pragma: no cover - hardware boundary
+        return {"available": False, "reason": f"Camera settings unavailable: {exc}"}
+    return {
+        "available": bool(status.get("available")),
+        "actual": status.get("actual", {}),
+        "camera": status.get("camera", {}),
+        "locked": status.get("locked"),
+        "profile": status.get("profile", {}),
+    }
+
+
+def _grading_snapshot() -> dict[str, object]:
+    if quality_model is None:
+        return {}
+    try:
+        diagnostics = quality_model.diagnostics()
+    except Exception:
+        return {}
+    config = diagnostics.get("grading_config") if isinstance(diagnostics, dict) else None
+    return dict(config) if isinstance(config, dict) else {}
+
+
+def _session_metadata() -> dict[str, object]:
+    """Create one JSON-safe reproducibility snapshot for a durable session."""
+
+    model1_path = getattr(model, "weights_path", None)
+    model2_path = getattr(quality_model, "weights_path", None) if quality_model is not None else None
+    grading_config = _grading_snapshot()
+    return {
+        "started_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "git_commit": _git_commit(),
+        "model1_path": str(model1_path) if model1_path else None,
+        "model1_sha256": _checkpoint_sha256(model1_path, getattr(model, "checkpoint_sha256", None)),
+        "model2_path": str(model2_path) if model2_path else None,
+        "model2_sha256": _checkpoint_sha256(model2_path, getattr(quality_model, "checkpoint_sha256", None)),
+        "tracker_backend": getattr(model, "tracker_backend", None),
+        "grading_config": grading_config,
+        "grading_config_hash": grading_config_hash(grading_config),
+        "camera_settings": _camera_settings_snapshot(),
+        "runtime_settings": {
+            "runtime_mode": RUNTIME_MODE,
+            "quality_inference_mode": (
+                getattr(service, "quality_inference_mode", FISH_QUALITY_INFERENCE_MODE)
+                if RUNTIME_MODE != PART_PREVIEW_MODE
+                else "not_applicable"
+            ),
+            "camera_index": CAMERA_INDEX,
+            "model1": {
+                "image_size": getattr(model, "image_size", FISH_DETECTOR_IMAGE_SIZE),
+                "device": getattr(model, "device", FISH_DETECTOR_DEVICE),
+                "detector_confidence_threshold": getattr(model, "confidence_threshold", state.confidence_threshold),
+                "class_names": list(getattr(model, "class_names", ())),
+            },
+            "model2": {
+                "image_size": getattr(quality_model, "image_size", FISH_QUALITY_IMAGE_SIZE) if quality_model is not None else None,
+                "device": getattr(quality_model, "device", FISH_QUALITY_DEVICE) if quality_model is not None else None,
+                "detector_confidence_threshold": getattr(quality_model, "confidence_threshold", None) if quality_model is not None else None,
+                "class_names": list(getattr(quality_model, "class_names", {}).values()) if quality_model is not None else [],
+                "quality_interval": service.quality_interval,
+                "roi_padding": service.quality_roi_padding,
+            },
+            "tracking": state.tracking.config.to_dict(),
+            "preprocessing": {"automatic_image_adjustments": False},
+        },
+    }
+
+
+def _persist_tracking_event(action: str, event: dict[str, object]) -> None:
+    """Persist create, late-grade, best-frame, and review updates without blocking counting."""
+
+    try:
+        session_id = inspection_sessions.session_id or inspection_sessions.event_session(_session_metadata())
+        inspection_database.upsert_event(session_id, event)
+        camera_settings = _camera_settings_snapshot()
+        if camera_settings.get("available"):
+            inspection_database.update_session(session_id, {"camera_settings": camera_settings})
+    except Exception as exc:  # pragma: no cover - persistence must not stop a conveyor
+        LOGGER.exception("Could not persist %s for Fish #%s: %s", action, event.get("track_id"), exc)
+
+
+def rotate_durable_session() -> str:
+    """Start a new persisted policy version after an authorized runtime reset."""
+
+    return inspection_sessions.rotate(_session_metadata())
+
+
+def _durable_events(
+    *,
+    range_name: str = "current_session",
+    start_date: str | None = None,
+    end_date: str | None = None,
+    session_id: str | None = None,
+) -> list[dict[str, object]]:
+    """Read the durable source, with a small legacy fallback before a session starts."""
+
+    requested_session = session_id or (inspection_sessions.session_id if range_name == "current_session" else None)
+    events = inspection_database.events(
+        session_id=requested_session,
+        range_name=range_name,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if not events and range_name == "current_session" and requested_session is None:
+        # Unit callers and a stopped app before its first durable session retain
+        # the historical in-memory behavior, but live completed events always
+        # arrive here through the tracking listener below.
+        return state.tracking.archive_history()
+    return events
+
+
+state.tracking.add_event_listener(_persist_tracking_event)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    inspection_database.initialize()
     if model.load():
         mode_message = "Raw part preview ready; fish counting is disabled. " if RUNTIME_MODE == PART_PREVIEW_MODE else ""
         tracker_detail = f" Tracker: {model.tracker_backend}." if hasattr(model, "tracker_backend") else ""
@@ -103,8 +270,11 @@ async def lifespan(_: FastAPI):
     if upload_test_model is not None:
         # This preview-only model never participates in the production pipeline.
         upload_test_model.load()
-    yield
-    service.stop()
+    try:
+        yield
+    finally:
+        service.stop()
+        inspection_sessions.close()
 
 
 app = FastAPI(title="Sardinella Lemuru Fish Detection API", version="3.0.0", lifespan=lifespan)
@@ -133,10 +303,15 @@ def _feature_counters(events: list[dict[str, object]]) -> dict[str, dict[str, ob
 
 
 def _analytics(events: list[dict[str, object]], snapshot: dict[str, object]) -> dict[str, object]:
-    """Build dashboard analytics from real current-session inspection events."""
+    """Build dashboard analytics from current or historical durable events."""
 
-    quality_counters = snapshot["quality_counters"]
-    assert isinstance(quality_counters, dict)
+    quality_counters = {name: 0 for name in QUALITY_COUNTER_NAMES}
+    for event in events:
+        quality = event.get("quality")
+        if quality not in quality_counters:
+            analysis = event.get("analysis")
+            quality = analysis.get("final_grade") if isinstance(analysis, dict) else None
+        quality_counters[quality if quality in quality_counters else "Ungraded"] += 1
     chronological = list(reversed(events))
     throughput = [
         {"timestamp": event.get("timestamp"), "total": index}
@@ -277,7 +452,8 @@ def _status_payload() -> dict[str, object]:
     snapshot["detection_confidence_threshold"] = state.confidence_threshold
     snapshot["default_confidence_threshold"] = PART_CONFIDENCE if RUNTIME_MODE == PART_PREVIEW_MODE else FISH_DETECTION_CONFIDENCE
     snapshot["default_quality_confidence_threshold"] = FISH_QUALITY_CONFIDENCE
-    snapshot["feature_counters"] = _feature_counters(state.tracking.archive_history())
+    durable_current_events = _durable_events()
+    snapshot["feature_counters"] = _feature_counters(durable_current_events)
     snapshot["upload_analysis_available"] = bool((image_analyzer is not None and model.model is not None) or (upload_test_model is not None and upload_test_model.model is not None))
     snapshot["upload_analysis_mode"] = "whole_fish" if image_analyzer is not None and model.model is not None else "part_preview"
     snapshot["upload_analysis_label"] = (
@@ -307,11 +483,21 @@ def _status_payload() -> dict[str, object]:
         "supports_masks": bool(getattr(model, "supports_masks", False)),
         "diagnostics": model.diagnostics() if hasattr(model, "diagnostics") else {},
     })
+    snapshot["model_info"]["quality"].update({
+        "quality_interval": service.quality_interval,
+        "roi_padding": service.quality_roi_padding,
+        "quality_inference_mode": service.quality_inference_mode,
+    })
     # Retain the old response member for clients on a prior dashboard build.
     snapshot["model_info"]["segmenter"] = snapshot["model_info"]["quality"]
     quality_diagnostics = snapshot["model_info"]["quality"].get("diagnostics", {})
     snapshot["grading_rules"] = quality_diagnostics.get("grading_config", {}) if isinstance(quality_diagnostics, dict) else {}
-    snapshot["analytics"] = _analytics(state.tracking.archive_history(), snapshot)
+    snapshot["analytics"] = _analytics(durable_current_events, snapshot)
+    snapshot["durable_session"] = {
+        "session_id": inspection_sessions.session_id,
+        "active": inspection_sessions.active,
+        "database_ready": True,
+    }
     return snapshot
 
 
@@ -328,18 +514,165 @@ def get_status() -> dict[str, object]:
 @app.post("/api/inspection/start")
 def start_inspection() -> dict[str, object]:
     started = service.start()
+    if started:
+        inspection_sessions.start(_session_metadata())
     return {"started": started, **_status_payload()}
 
 
 @app.post("/api/inspection/stop")
 def stop_inspection() -> dict[str, object]:
     stopped = service.stop()
+    if inspection_sessions.active:
+        camera_settings = _camera_settings_snapshot()
+        if camera_settings.get("available"):
+            inspection_database.update_session(inspection_sessions.session_id or "", {"camera_settings": camera_settings})
+        inspection_sessions.close()
     return {"stopped": stopped, **_status_payload()}
+
+
+@app.get("/api/camera/settings")
+def get_camera_settings() -> dict[str, object]:
+    """Return physical-camera readbacks from the shared capture owner."""
+
+    return service.camera_status()
+
+
+@app.get("/api/camera/capabilities")
+def get_camera_capabilities() -> dict[str, object]:
+    status = service.camera_status()
+    capabilities = status.get("capabilities")
+    return capabilities if isinstance(capabilities, dict) else {"available": False, "reason": "Camera capabilities are unavailable.", "properties": {}}
+
+
+async def _camera_payload(request: Request) -> dict[str, object]:
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="Camera settings must be valid JSON.") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Camera settings must be a JSON object.")
+    return payload
+
+
+def _record_camera_policy_change(result: dict[str, object]) -> str | None:
+    """Prevent one fish from spanning physical-camera acquisition settings."""
+
+    entries = result.get("results")
+    changed = bool(result.get("success")) or (
+        isinstance(entries, dict)
+        and any(isinstance(value, dict) and value.get("success") is True for value in entries.values())
+    )
+    if not changed:
+        return None
+    service.reset_active_policy_evidence()
+    return rotate_durable_session() if inspection_sessions.active else None
+
+
+@app.post("/api/camera/settings")
+async def update_camera_settings(request: Request) -> dict[str, object]:
+    """Apply only supported hardware settings and return their actual readback."""
+
+    payload = await _camera_payload(request)
+    try:
+        allowed_keys = {item.key for item in CAMERA_PROPERTIES} | {"calibration_mode"}
+        unknown_keys = sorted(str(key) for key in set(payload) - allowed_keys)
+        if unknown_keys:
+            raise HTTPException(status_code=422, detail=f"Unsupported camera setting(s): {', '.join(unknown_keys)}.")
+        calibration = payload.pop("calibration_mode", None)
+        if calibration is not None:
+            service.set_calibration_mode(calibration)
+        values = {item.key: payload[item.key] for item in CAMERA_PROPERTIES if item.key in payload}
+        if not values:
+            status = service.camera_status()
+            return {"success": True, "requested": {}, "actual": status.get("actual", {}), "camera": status}
+        result = service.update_camera_settings(values)
+        session_id = _record_camera_policy_change(result)
+        return {**result, "policy_session_id": session_id, "camera": service.camera_status()}
+    except CameraControlError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@app.post("/api/camera/reset")
+def reset_camera_settings() -> dict[str, object]:
+    try:
+        result = service.reset_camera_settings()
+        session_id = _record_camera_policy_change(result)
+        return {**result, "policy_session_id": session_id, "camera": service.camera_status()}
+    except CameraControlError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@app.post("/api/camera/profile/save")
+def save_camera_profile() -> dict[str, object]:
+    try:
+        result = service.save_camera_profile()
+        return {**result, "camera": service.camera_status()}
+    except CameraControlError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@app.post("/api/camera/reference")
+async def record_camera_reference(request: Request) -> dict[str, object]:
+    """Record calibration-only reference-scene statistics for a future study."""
+
+    payload = await _camera_payload(request)
+    unknown_keys = sorted(str(key) for key in set(payload) - {"scene_type", "note"})
+    if unknown_keys:
+        raise HTTPException(status_code=422, detail=f"Unsupported reference field(s): {', '.join(unknown_keys)}.")
+    try:
+        result = service.record_camera_reference(payload.get("scene_type"), payload.get("note"))
+        return {**result, "camera": service.camera_status()}
+    except CameraControlError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@app.post("/api/camera/profile/confirm")
+async def confirm_camera_profile(request: Request) -> dict[str, object]:
+    """Persist operator confirmation and physical setup metadata explicitly."""
+
+    payload = await _camera_payload(request)
+    allowed = {"operator_confirmed", "operator_name", "installation"}
+    unknown_keys = sorted(str(key) for key in set(payload) - allowed)
+    if unknown_keys:
+        raise HTTPException(status_code=422, detail=f"Unsupported profile-confirmation field(s): {', '.join(unknown_keys)}.")
+    installation = payload.get("installation")
+    if installation is not None and not isinstance(installation, dict):
+        raise HTTPException(status_code=422, detail="installation must be a JSON object.")
+    try:
+        result = service.confirm_camera_profile(
+            operator_confirmed=payload.get("operator_confirmed"),
+            operator_name=payload.get("operator_name"),
+            installation=installation,
+        )
+        return {**result, "camera": service.camera_status()}
+    except CameraControlError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@app.post("/api/camera/profile/load")
+def load_camera_profile() -> dict[str, object]:
+    try:
+        result = service.load_camera_profile()
+        session_id = _record_camera_policy_change(result)
+        return {**result, "policy_session_id": session_id, "camera": service.camera_status()}
+    except CameraControlError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@app.post("/api/camera/lock")
+async def lock_camera_settings(request: Request) -> dict[str, object]:
+    payload = await _camera_payload(request)
+    try:
+        status = service.lock_camera_settings(payload.get("locked"))
+        return {"success": True, "locked": status.get("locked"), "camera": status}
+    except CameraControlError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
 
 
 @app.post("/api/session/reset")
 def reset_session() -> dict[str, object]:
     service.reset_session()
+    rotate_durable_session()
     return {"reset": True, **_status_payload()}
 
 
@@ -347,16 +680,28 @@ def reset_session() -> dict[str, object]:
 def get_history(
     page: int = 1,
     page_size: int = 25,
+    range_name: str = "current_session",
+    session_id: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
     search: str | None = None,
     grade: str | None = None,
     feature: str | None = None,
     min_confidence: float | None = None,
 ) -> dict[str, object]:
-    """Paginate the current session archive without implying disk persistence."""
+    """Paginate durable inspection records, optionally scoped to one session."""
 
     if page < 1 or not 1 <= page_size <= 100:
         raise HTTPException(status_code=422, detail="page must be positive and page_size must be between 1 and 100.")
-    events = state.tracking.archive_history()
+    try:
+        events = _durable_events(
+            range_name=range_name,
+            session_id=session_id,
+            start_date=start_date,
+            end_date=end_date,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if search:
         needle = search.casefold().replace("fish", "").replace("#", "").strip()
         events = [event for event in events if needle in str(event.get("track_id", "")).casefold()]
@@ -370,10 +715,24 @@ def get_history(
     if min_confidence is not None:
         if not 0 <= min_confidence <= 100:
             raise HTTPException(status_code=422, detail="min_confidence must be between 0 and 100.")
+        def weighted_support(event: dict[str, object]) -> float:
+            analysis = event.get("analysis")
+            if isinstance(analysis, dict):
+                for key in ("final_score", "provisional_score", "best_evidence_score"):
+                    try:
+                        value = analysis.get(key)
+                        if value is not None:
+                            return float(value)
+                    except (TypeError, ValueError):
+                        continue
+            try:
+                return float(event.get("quality_confidence") or 0)
+            except (TypeError, ValueError):
+                return 0.0
         events = [
             event
             for event in events
-            if float(event.get("quality_confidence") or event.get("final_confidence") or 0) * 100 >= min_confidence
+            if weighted_support(event) * 100 >= min_confidence
         ]
     total = len(events)
     start = (page - 1) * page_size
@@ -386,6 +745,22 @@ def get_history(
         "total_pages": max(1, (total + page_size - 1) // page_size),
         "latest_event": snapshot["latest_event"],
         "recent_history": snapshot["recent_history"],
+        "range": range_name,
+        "session_id": session_id or (inspection_sessions.session_id if range_name == "current_session" else None),
+        "sessions": inspection_database.sessions(),
+    }
+
+
+@app.get("/api/sessions")
+def get_sessions(limit: int = 100) -> dict[str, object]:
+    """Expose durable session snapshots for history and export selectors."""
+
+    if not 1 <= limit <= 1000:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 1000.")
+    return {
+        "items": inspection_database.sessions(limit=limit),
+        "current_session_id": inspection_sessions.session_id,
+        "active": inspection_sessions.active,
     }
 
 
@@ -408,9 +783,14 @@ def _canonical_manual_grade(value: object) -> str | None:
 
 @app.get("/api/reviews")
 def get_review_queue(include_reviewed: bool = False) -> dict[str, object]:
-    """List AI results that remain Ungraded / Needs Review."""
+    """List durable AI results that remain Ungraded / Needs Review."""
 
-    items = state.tracking.review_queue(include_reviewed=include_reviewed)
+    items = []
+    for event in _durable_events():
+        analysis = event.get("analysis")
+        needs_review = isinstance(analysis, dict) and analysis.get("verdict_status") == "NEEDS_REVIEW"
+        if needs_review and (include_reviewed or not event.get("manual_override")):
+            items.append(event)
     return {"items": items, "total": len(items), "include_reviewed": include_reviewed}
 
 
@@ -426,18 +806,43 @@ async def review_fish(track_id: int, request: Request) -> dict[str, object]:
         raise HTTPException(status_code=422, detail="Review settings must be a JSON object.")
     try:
         manual_grade = _canonical_manual_grade(payload.get("manual_grade"))
-        item = state.tracking.apply_manual_review(track_id, manual_grade)
+        try:
+            item = state.tracking.apply_manual_review(track_id, manual_grade)
+        except KeyError:
+            session_id = inspection_sessions.session_id
+            item = inspection_database.apply_manual_review(session_id or "", track_id, manual_grade)
+            if item is None:
+                raise KeyError(track_id)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except KeyError:
-        raise HTTPException(status_code=404, detail=f"Fish #{track_id} is not in the current session archive.") from None
-    return {"updated": True, "item": item, "review_queue_count": len(state.tracking.review_queue())}
+        raise HTTPException(status_code=404, detail=f"Fish #{track_id} is not in the current durable session.") from None
+    review_queue_count = len(get_review_queue().get("items", []))
+    return {"updated": True, "item": item, "review_queue_count": review_queue_count}
 
 
 @app.get("/api/analytics")
-def get_analytics() -> dict[str, object]:
+def get_analytics(
+    range_name: str = "current_session",
+    session_id: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> dict[str, object]:
     snapshot = state.snapshot()
-    return _analytics(state.tracking.archive_history(), snapshot)
+    try:
+        events = _durable_events(
+            range_name=range_name,
+            session_id=session_id,
+            start_date=start_date,
+            end_date=end_date,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        **_analytics(events, snapshot),
+        "range": range_name,
+        "session_id": session_id or (inspection_sessions.session_id if range_name == "current_session" else None),
+    }
 
 
 @app.get("/api/settings")
@@ -446,6 +851,8 @@ def get_settings() -> dict[str, object]:
         "detection_confidence_threshold": state.confidence_threshold,
         "quality_confidence_threshold": state.quality_confidence_threshold,
         "display_settings": state.current_display_settings(),
+        "policy_settings_locked": state.snapshot()["inspection_status"] in {"starting", "running"},
+        "policy_settings_lock_reason": "Stop inspection before changing a detector or grading policy setting.",
         "advanced_thresholds_supported": True,
     }
 
@@ -461,6 +868,12 @@ async def update_settings(request: Request) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=422, detail="Settings must be a JSON object.")
     detector_setting = payload.get("detection_confidence_threshold", payload.get("confidence_threshold"))
+    policy_change_requested = detector_setting is not None or "quality_confidence_threshold" in payload
+    if policy_change_requested and state.snapshot()["inspection_status"] in {"starting", "running"}:
+        raise HTTPException(
+            status_code=409,
+            detail="Stop inspection before changing detector or grading-policy settings; active fish must not mix policies.",
+        )
     if detector_setting is not None:
         try:
             threshold = float(detector_setting)
@@ -511,10 +924,14 @@ async def export_history(request: Request) -> Response:
         fields = DEFAULT_EXPORT_FIELDS
     if any(field not in EXPORT_FIELDS for field in fields):
         raise HTTPException(status_code=422, detail="One or more export fields are unsupported.")
+    range_name = str(payload.get("range", "current_session"))
+    requested_session = payload.get("session_id")
+    if requested_session is not None and not isinstance(requested_session, str):
+        raise HTTPException(status_code=422, detail="session_id must be a string when supplied.")
     try:
-        events = filter_events(
-            state.tracking.archive_history(),
-            range_name=str(payload.get("range", "current_session")),
+        events = _durable_events(
+            range_name=range_name,
+            session_id=requested_session,
             start_date=payload.get("start_date"),
             end_date=payload.get("end_date"),
         )
@@ -522,11 +939,11 @@ async def export_history(request: Request) -> Response:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     snapshot = state.snapshot()
     analytics = _analytics(events, snapshot)
-    quality = snapshot["quality_counters"]
+    quality = analytics["grade_distribution"]
     assert isinstance(quality, dict)
     summary = {
         "Total Fish": len(events),
-        "Average Grade Confidence": f"{analytics['average_grade_confidence']:.1f}%" if analytics["average_grade_confidence"] is not None else "",
+        "Average Final Support": f"{analytics['average_grade_confidence']:.1f}%" if analytics["average_grade_confidence"] is not None else "",
         "Average Detection Confidence": f"{analytics['average_detection_confidence']:.1f}%" if analytics["average_detection_confidence"] is not None else "",
         "Automatically Graded": analytics["automatically_graded"],
         "Needs Review": analytics["needs_review"],
@@ -542,7 +959,7 @@ async def export_history(request: Request) -> Response:
     }
     part_averages = analytics["average_part_quality_scores"]
     assert isinstance(part_averages, dict)
-    summary.update({f"Average {region} Grade Confidence": value if value is not None else "" for region, value in part_averages.items()})
+    summary.update({f"Average {region} Evidence": value if value is not None else "" for region, value in part_averages.items()})
     summary.update({f"{name} Count": value for name, value in quality.items()})
     summary.update({f"{name} Observed": detail["count"] for name, detail in _feature_counters(events).items()})
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -552,7 +969,14 @@ async def export_history(request: Request) -> Response:
     else:
         try:
             rules = _status_payload().get("grading_rules")
-            body = make_xlsx(events, fields, summary, rules if isinstance(rules, dict) else None)
+            session_metadata = inspection_database.session(requested_session or inspection_sessions.session_id or "")
+            body = make_xlsx(
+                events,
+                fields,
+                summary,
+                rules if isinstance(rules, dict) else None,
+                session_configuration=session_metadata,
+            )
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         media_type, extension = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"

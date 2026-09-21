@@ -1,0 +1,488 @@
+{
+  "confidence": 0.25,
+  "data": "C:\\Users\\User\\Downloads\\Thesis\\sardinella-lemuru-ml\\dataset\\canonical_v7_parts\\data.yaml",
+  "evaluated_utc": "2026-09-21T05:43:15.022560+00:00",
+  "interpretation": "Validation may select thresholds. Test results are locked final estimates and must not be used to tune the model or confidence threshold.",
+  "metrics": {
+    "anatomical_regions_macro_mean": {
+      "Body": {
+        "box_map50": 0.8464711903634057,
+        "box_map50_95": 0.5494014866236073,
+        "box_precision": 0.8595192834242206,
+        "box_recall": 0.8560571300044985,
+        "mask_map50": null,
+        "mask_map50_95": null,
+        "mask_precision": null,
+        "mask_recall": null
+      },
+      "Head": {
+        "box_map50": 0.9163710898272518,
+        "box_map50_95": 0.6038460714589083,
+        "box_precision": 0.8656248926881369,
+        "box_recall": 0.9236387554849584,
+        "mask_map50": null,
+        "mask_map50_95": null,
+        "mask_precision": null,
+        "mask_recall": null
+      },
+      "Tail": {
+        "box_map50": 0.6812071321986878,
+        "box_map50_95": 0.3611817572611331,
+        "box_precision": 0.8110864975779417,
+        "box_recall": 0.7092570467835735,
+        "mask_map50": null,
+        "mask_map50_95": null,
+        "mask_precision": null,
+        "mask_recall": null
+      }
+    },
+    "confusion": {
+      "anatomical_region_matrix": [
+        [
+          456.0,
+          8.0,
+          3.0
+        ],
+        [
+          3.0,
+          432.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          193.0
+        ]
+      ],
+      "matrix_convention": "rows=predicted, columns=true; background row/column retained only in raw",
+      "quality_grade_matrix": [
+        [
+          178.0,
+          6.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          315.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          3.0,
+          208.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          385.0
+        ]
+      ],
+      "quality_labels": [
+        "Class A",
+        "Class B",
+        "Class C",
+        "Rejected"
+      ],
+      "raw": [
+        [
+          58.0,
+          0.0,
+          0.0,
+          6.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          42.0
+        ],
+        [
+          0.0,
+          67.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          7.0
+        ],
+        [
+          0.0,
+          0.0,
+          53.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          126.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          11.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          145.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          24.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          44.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          19.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          3.0,
+          101.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          3.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          75.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          15.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          32.0,
+          0.0,
+          0.0,
+          0.0,
+          13.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          165.0,
+          8.0,
+          0.0,
+          8.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          3.0,
+          145.0,
+          0.0,
+          23.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          64.0,
+          19.0
+        ],
+        [
+          17.0,
+          2.0,
+          13.0,
+          21.0,
+          5.0,
+          46.0,
+          3.0,
+          3.0,
+          4.0,
+          3.0,
+          15.0,
+          17.0,
+          0.0
+        ]
+      ],
+      "raw_labels": [
+        "Grade_A_Body",
+        "Grade_A_Head",
+        "Grade_A_Tail",
+        "Grade_B_Body",
+        "Grade_B_Head",
+        "Grade_B_Tail",
+        "Grade_C_Body",
+        "Grade_C_Head",
+        "Grade_C_Tail",
+        "Rejected_Body",
+        "Rejected_Head",
+        "Rejected_Tail",
+        "background"
+      ],
+      "region_labels": [
+        "Body",
+        "Head",
+        "Tail"
+      ]
+    },
+    "overall": {
+      "fitness": 0.5048097717812162,
+      "metrics/mAP50(B)": 0.814683137463115,
+      "metrics/mAP50-95(B)": 0.5048097717812162,
+      "metrics/precision(B)": 0.8454102245634331,
+      "metrics/recall(B)": 0.8296509774243436
+    },
+    "per_class": {
+      "Grade_A_Body": {
+        "box_map50": 0.6610460199907299,
+        "box_map50_95": 0.40914818453165874,
+        "box_precision": 0.6359376561523075,
+        "box_recall": 0.72,
+        "mask_map50": null,
+        "mask_map50_95": null,
+        "mask_precision": null,
+        "mask_recall": null
+      },
+      "Grade_A_Head": {
+        "box_map50": 0.9395318524826721,
+        "box_map50_95": 0.5918654045016213,
+        "box_precision": 0.8856370625890704,
+        "box_recall": 0.9420289855072463,
+        "mask_map50": null,
+        "mask_map50_95": null,
+        "mask_precision": null,
+        "mask_recall": null
+      },
+      "Grade_A_Tail": {
+        "box_map50": 0.7811680911680912,
+        "box_map50_95": 0.3095788039642369,
+        "box_precision": 0.9806020949356815,
+        "box_recall": 0.7660114510519337,
+        "mask_map50": null,
+        "mask_map50_95": null,
+        "mask_precision": null,
+        "mask_recall": null
+      },
+      "Grade_B_Body": {
+        "box_map50": 0.8176198103360733,
+        "box_map50_95": 0.4841497924026804,
+        "box_precision": 0.9371740908789326,
+        "box_recall": 0.7777777777777778,
+        "mask_map50": null,
+        "mask_map50_95": null,
+        "mask_precision": null,
+        "mask_recall": null
+      },
+      "Grade_B_Head": {
+        "box_map50": 0.9369241751894669,
+        "box_map50_95": 0.5397486556042399,
+        "box_precision": 0.8869228025612699,
+        "box_recall": 0.9412281841328535,
+        "mask_map50": null,
+        "mask_map50_95": null,
+        "mask_precision": null,
+        "mask_recall": null
+      },
+      "Grade_B_Tail": {
+        "box_map50": 0.4455346771058915,
+        "box_map50_95": 0.23230663773937268,
+        "box_precision": 0.7391255648353129,
+        "box_recall": 0.4731182795698925,
+        "mask_map50": null,
+        "mask_map50_95": null,
+        "mask_precision": null,
+        "mask_recall": null
+      },
+      "Grade_C_Body": {
+        "box_map50": 0.9459310938282899,
+        "box_map50_95": 0.6588301748283927,
+        "box_precision": 0.9495254181257728,
+        "box_recall": 0.9615384615384616,
+        "mask_map50": null,
+        "mask_map50_95": null,
+        "mask_precision": null,
+        "mask_recall": null
+      },
+      "Grade_C_Head": {
+        "box_map50": 0.9489630486884009,
+        "box_map50_95": 0.7099052020738994,
+        "box_precision": 0.8389634637574204,
+        "box_recall": 0.9615384615384616,
+        "mask_map50": null,
+        "mask_map50_95": null,
+        "mask_precision": null,
+        "mask_recall": null
+      },
+      "Grade_C_Tail": {
+        "box_map50": 0.7971807211860743,
+        "box_map50_95": 0.44486703814573564,
+        "box_precision": 0.7532037433394588,
+        "box_recall": 0.847928164101979,
+        "mask_map50": null,
+        "mask_map50_95": null,
+        "mask_precision": null,
+        "mask_recall": null
+      },
+      "Rejected_Body": {
+        "box_map50": 0.9612878372985296,
+        "box_map50_95": 0.6454777947316974,
+        "box_precision": 0.9154399685398695,
+        "box_recall": 0.9649122807017544,
+        "mask_map50": null,
+        "mask_map50_95": null,
+        "mask_precision": null,
+        "mask_recall": null
+      },
+      "Rejected_Head": {
+        "box_map50": 0.8400652829484673,
+        "box_map50_95": 0.5738650236558727,
+        "box_precision": 0.850976241844787,
+        "box_recall": 0.8497593907612725,
+        "mask_map50": null,
+        "mask_map50_95": null,
+        "mask_precision": null,
+        "mask_recall": null
+      },
+      "Rejected_Tail": {
+        "box_map50": 0.700945039334694,
+        "box_map50_95": 0.4579745491951871,
+        "box_precision": 0.7714145872013134,
+        "box_recall": 0.749970292410489,
+        "mask_map50": null,
+        "mask_map50_95": null,
+        "mask_precision": null,
+        "mask_recall": null
+      }
+    },
+    "quality_groups_macro_mean": {
+      "Class A": {
+        "box_map50": 0.7939153212138311,
+        "box_map50_95": 0.4368641309991723,
+        "box_precision": 0.8340589378923532,
+        "box_recall": 0.8093468121863934,
+        "mask_map50": null,
+        "mask_map50_95": null,
+        "mask_precision": null,
+        "mask_recall": null
+      },
+      "Class B": {
+        "box_map50": 0.7333595542104773,
+        "box_map50_95": 0.41873502858209766,
+        "box_precision": 0.8544074860918385,
+        "box_recall": 0.7307080804935079,
+        "mask_map50": null,
+        "mask_map50_95": null,
+        "mask_precision": null,
+        "mask_recall": null
+      },
+      "Class C": {
+        "box_map50": 0.8973582879009218,
+        "box_map50_95": 0.6045341383493426,
+        "box_precision": 0.8472308750742173,
+        "box_recall": 0.9236683623929673,
+        "mask_map50": null,
+        "mask_map50_95": null,
+        "mask_precision": null,
+        "mask_recall": null
+      },
+      "Rejected": {
+        "box_map50": 0.8340993865272303,
+        "box_map50_95": 0.5591057891942524,
+        "box_precision": 0.8459435991953234,
+        "box_recall": 0.8548806546245054,
+        "mask_map50": null,
+        "mask_map50_95": null,
+        "mask_precision": null,
+        "mask_recall": null
+      }
+    },
+    "speed_ms": {
+      "inference": 93.05816434779958,
+      "loss": 0.00012695647614157718,
+      "postprocess": 0.09197043473250233,
+      "preprocess": 1.1812243478071531
+    }
+  },
+  "split": "val",
+  "weights": "C:\\Users\\User\\Downloads\\Thesis\\sardinella-lemuru-ml\\models\\fish_quality\\weights\\last.pt"
+}

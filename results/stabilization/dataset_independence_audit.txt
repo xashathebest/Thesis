@@ -1,0 +1,19 @@
+DATASET INDEPENDENCE AUDIT
+
+Samples: 1756
+Lineage-connected groups combine every recorded relationship and may differ from a native source-group column.
+Train lineage-connected groups: 869 (samples: 1526)
+Validation lineage-connected groups: 41 (samples: 115)
+Test lineage-connected groups: 43 (samples: 115)
+
+Train <-> Validation overlap: 39 group(s)
+Train <-> Test overlap: 38 group(s)
+Validation <-> Test overlap: 0 group(s)
+
+Missing explicit provenance: 0 sample(s)
+Near-duplicate scan: NOT_REQUESTED (not run; suspicious near duplicates were not scanned)
+Independent validation: FAIL
+Independent test: FAIL
+FINAL PERFORMANCE CERTIFICATION = BLOCKED
+
+Required performance label: development/compatibility result only

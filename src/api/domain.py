@@ -5,9 +5,10 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
+import logging
 from threading import RLock
 from time import monotonic
-from typing import Iterable
+from typing import Callable, Iterable
 
 from src.api.runtime import PART_PREVIEW_MODE, WHOLE_FISH_MODE
 
@@ -19,6 +20,7 @@ QUALITY_COUNTER_NAMES = ("Class A", "Class B", "Class C", "Rejected", "Ungraded"
 MANUAL_GRADE_NAMES = ("Class A", "Class B", "Class C", "Rejected")
 VALID_DIRECTIONS = ("left_to_right", "right_to_left", "top_to_bottom", "bottom_to_top")
 SESSION_ARCHIVE_LIMIT = 10_000
+LOGGER = logging.getLogger(__name__)
 
 # Model 2 reports the three detected anatomical regions for its real 12-class
 # Grade A/B/C/Rejected part labels. It does not classify cracks, yellowing,
@@ -123,6 +125,10 @@ class TrackState:
     current_center: tuple[float, float]
     counted: bool = False
     observations: list[tuple[str, float]] = field(default_factory=list)
+    # ``observations`` is deliberately bounded for classification aggregation;
+    # retain the independent lifetime count so audit records never mistake the
+    # rolling evidence window for the number of tracked detection frames.
+    lifetime_detection_frames: int = 0
     final_class: str | None = None
     final_confidence: float | None = None
     quality: str | None = None
@@ -145,6 +151,7 @@ class TrackState:
             previous_center=None,
             current_center=detection.center,
             observations=[(detection.class_name, detection.confidence)],
+            lifetime_detection_frames=1,
         )
         if grade:
             track.set_grade(grade)
@@ -157,6 +164,7 @@ class TrackState:
         self.current_class = detection.class_name
         self.current_confidence = detection.confidence
         self.last_seen = timestamp
+        self.lifetime_detection_frames += 1
         if not self.counted:
             self.observations.append((detection.class_name, detection.confidence))
             if len(self.observations) > evidence_limit:
@@ -199,6 +207,7 @@ class TrackState:
             "current_center": list(self.current_center),
             "counted": self.counted,
             "observation_count": len(self.observations),
+            "track_lifetime_detection_frames": self.lifetime_detection_frames,
             "provisional_class": provisional_class,
             "provisional_confidence": round(provisional_confidence, 4),
             "final_class": self.final_class,
@@ -319,6 +328,33 @@ class TrackingManager:
         # ``_history`` stays intentionally compact for the live dashboard.
         self._archive: deque[InspectionEvent] = deque(maxlen=SESSION_ARCHIVE_LIMIT)
         self._statistics = SessionStatistics()
+        # Persistence is optional at the domain layer.  Listeners receive a
+        # serializable snapshot only after the in-memory event mutation has
+        # completed, so a database error can never interrupt conveyor counting.
+        self._event_listeners: list[Callable[[str, dict[str, object]], None]] = []
+
+    def add_event_listener(self, listener: Callable[[str, dict[str, object]], None]) -> None:
+        """Subscribe to completed-event create/update/review snapshots."""
+
+        if not callable(listener):
+            raise TypeError("An inspection event listener must be callable.")
+        with self._lock:
+            if listener not in self._event_listeners:
+                self._event_listeners.append(listener)
+
+    def remove_event_listener(self, listener: Callable[[str, dict[str, object]], None]) -> None:
+        with self._lock:
+            self._event_listeners = [registered for registered in self._event_listeners if registered != listener]
+
+    def _notify_event_listeners(self, action: str, event: InspectionEvent) -> None:
+        with self._lock:
+            listeners = tuple(self._event_listeners)
+        payload = event.to_dict()
+        for listener in listeners:
+            try:
+                listener(action, dict(payload))
+            except Exception as exc:  # pragma: no cover - defensive integration boundary
+                LOGGER.exception("Inspection event listener failed for %s / Fish #%s: %s", action, event.track_id, exc)
 
     def reset_session(self) -> None:
         """Clear statistics and active tracks to avoid stale post-reset crossings."""
@@ -354,7 +390,10 @@ class TrackingManager:
         result = dict(track.quality_analysis)
         result["track_stability"] = {
             "track_id": track.track_id,
-            "number_of_frames": len(track.observations),
+            "number_of_frames": track.lifetime_detection_frames,
+            "track_lifetime_detection_frames": track.lifetime_detection_frames,
+            "classification_evidence_frames": len(track.observations),
+            "number_of_frames_note": "Tracked Model 1 detection frames; this is separate from the bounded classification evidence window.",
             "first_seen_monotonic": track.created_at,
             "last_seen_monotonic": track.last_seen,
             "track_duration_seconds": max(0.0, track.last_seen - track.created_at),
@@ -373,6 +412,7 @@ class TrackingManager:
         processing_time_ms: float | None = None,
     ) -> list[InspectionEvent]:
         now = monotonic() if timestamp is None else timestamp
+        notifications: list[tuple[str, InspectionEvent]] = []
         with self._lock:
             self._tracks = {
                 track_id: track
@@ -432,6 +472,9 @@ class TrackingManager:
                         ],
                         maxlen=SESSION_ARCHIVE_LIMIT,
                     )
+                    updated_event = next((event for event in self._archive if event.track_id == track_id), None)
+                    if updated_event is not None:
+                        notifications.append(("updated", updated_event))
                 if track.counted or track.previous_center is None:
                     continue
                 if not self._crossed(track.previous_center, track.current_center, frame_size):
@@ -458,7 +501,10 @@ class TrackingManager:
                 self._archive.appendleft(event)
                 self._statistics.record(event)
                 events.append(event)
-            return events
+                notifications.append(("created", event))
+        for action, event in notifications:
+            self._notify_event_listeners(action, event)
+        return events
 
     def active_tracks(self) -> list[dict[str, object]]:
         with self._lock:
@@ -516,9 +562,15 @@ class TrackingManager:
                 raise KeyError(track_id)
             for event in self._archive:
                 if event.track_id == track_id:
-                    return event.to_dict()
+                    reviewed_event = event
+                    break
+            else:
+                reviewed_event = None
             # Defensive fallback for a very small archive limit.
-            raise KeyError(track_id)
+            if reviewed_event is None:
+                raise KeyError(track_id)
+        self._notify_event_listeners("reviewed", reviewed_event)
+        return reviewed_event.to_dict()
 
     def update_event_analysis(self, track_id: int, updates: dict[str, object]) -> dict[str, object] | None:
         """Add finalized metadata (for example one saved best crop) to an event.
@@ -543,7 +595,10 @@ class TrackingManager:
 
             self._history = deque((merge(event) for event in self._history), maxlen=self.config.history_limit)
             self._archive = deque((merge(event) for event in self._archive), maxlen=SESSION_ARCHIVE_LIMIT)
-            return found.to_dict() if found is not None else None
+        if found is not None:
+            self._notify_event_listeners("updated", found)
+            return found.to_dict()
+        return None
 
     def counters(self) -> dict[str, int]:
         with self._lock:

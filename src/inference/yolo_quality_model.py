@@ -6,21 +6,24 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
 from time import perf_counter
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
 from src.api.domain import QualitySummary
+from src.inference.association import ParentAnchor, associate_parts_to_parents, association_summary
 from src.inference.frame_quality import BestFrameSelection, BestFrameSelector, FrameQualityAssessment, FrameQualityConfig, assess_frame_quality
 from src.inference.grading_engine import FishVerdict, WeightedGradingEngine
 from src.inference.model_traceability import shortened_sha256
-from src.inference.part_fusion import PartDetection
-from src.inference.preprocessing import clamp_bbox, validate_image
+from src.inference.part_types import PartDetection
+from src.inference.preprocessing import CropBounds, clamp_bbox, crop_fish, validate_image
 from src.preprocessing.audit_v7_exports import SOURCE_CLASSES
 from src.preprocessing.dataset_utils import project_root
 
 
 SUPPORTED_CHECKPOINT_SUFFIXES = (".pt", ".pth", ".ckpt")
+QUALITY_INFERENCE_MODES = ("crop", "full_frame")
+MAX_QUALITY_ROI_PADDING = 4096  # operational bound, not a selected scientific value
 
 
 class YoloQualityModelError(RuntimeError):
@@ -105,15 +108,23 @@ class YoloQualityModel:
         image_size: int = 640,
         model_factory: Callable[[str], Any] | None = None,
         grading_engine: WeightedGradingEngine | None = None,
+        quality_inference_mode: str = "crop",
+        roi_padding: int = 0,
     ) -> None:
         if not 0.0 <= confidence_threshold <= 1.0:
             raise ValueError("FISH_QUALITY_CONFIDENCE must be between 0 and 1.")
         if image_size <= 0:
             raise ValueError("FISH_QUALITY_IMAGE_SIZE must be positive.")
+        if quality_inference_mode not in QUALITY_INFERENCE_MODES:
+            raise ValueError(f"quality_inference_mode must be one of: {', '.join(QUALITY_INFERENCE_MODES)}.")
+        if isinstance(roi_padding, bool) or not isinstance(roi_padding, int) or not 0 <= roi_padding <= MAX_QUALITY_ROI_PADDING:
+            raise ValueError(f"roi_padding must be an integer between 0 and {MAX_QUALITY_ROI_PADDING}.")
         self.model_path = model_path
         self.confidence_threshold = confidence_threshold
         self.requested_device = device
         self.image_size = image_size
+        self.quality_inference_mode = quality_inference_mode
+        self.roi_padding = roi_padding
         self._model_factory = model_factory
         self._grading_engine = grading_engine or WeightedGradingEngine()
         config = self._grading_engine.config
@@ -235,6 +246,125 @@ class YoloQualityModel:
                 parts.append(PartDetection.from_source_class(class_id, confidence, bounded))
         return parts
 
+    def _infer_parts(self, image: np.ndarray) -> list[PartDetection]:
+        """Run exactly one Model 2 detector call and retain real boxes only."""
+
+        height, width = image.shape[:2]
+        with self._lock:
+            started = perf_counter()
+            results = self.model.predict(  # type: ignore[union-attr]
+                source=image,
+                conf=self.confidence_threshold,
+                imgsz=self.image_size,
+                device=self.device,
+                verbose=False,
+            )
+            self.last_inference_seconds = perf_counter() - started
+        return self._part_detections(results[0], width, height, self.confidence_threshold) if results else []
+
+    def _grade_parts(
+        self,
+        crop: np.ndarray,
+        track_id: int,
+        parts: Sequence[PartDetection],
+        *,
+        stabilize: bool,
+        frame_id: int | str | None,
+        frame_quality: Mapping[str, object] | None,
+        detection_confidence: float | None,
+        parent_bbox: tuple[float, float, float, float] | None,
+        frame_shape: tuple[int, ...] | None,
+        inference_metadata: Mapping[str, object],
+        model2_available: bool = True,
+    ) -> FishQualityObservation:
+        """Apply the one canonical temporal grading engine to selected parts."""
+
+        assessment: FrameQualityAssessment | None = None
+        quality_payload: dict[str, object] = dict(frame_quality or {})
+        # A caller may supply only association context (full-frame mode). Keep
+        # measuring the parent crop in that case. An explicit usable/frame
+        # quality payload remains authoritative for replay and tests.
+        if frame_quality is None or "usable" not in quality_payload:
+            assessment = assess_frame_quality(
+                crop,
+                detection_confidence=detection_confidence,
+                bbox=parent_bbox,
+                frame_shape=frame_shape,
+                frame_id=frame_id,
+                config=self._frame_quality_config,
+            )
+            quality_payload = {**assessment.to_dict(), **quality_payload}
+        best_frame: dict[str, object] | None = None
+        if assessment is not None and (not stabilize or track_id not in self._finalized_best_frames):
+            # Still-image calls use an isolated candidate so separate uploads
+            # with local index 1 never share representative-frame state.
+            selector = self._best_frame_selector if stabilize else BestFrameSelector(self._frame_quality_config)
+            selected = selector.consider(
+                track_id=track_id,
+                frame_id=frame_id,
+                assessment=assessment,
+                visible_regions=sorted({part.region for part in parts}),
+            )
+            if selected is not None:
+                best_frame = selected.to_dict()
+                if stabilize and selected.best_frame_id == frame_id and self._grading_engine.config.save_best_fish_crop:
+                    self._best_crop_data[track_id] = (crop.copy(), tuple(parts), selected)
+        elif stabilize and track_id in self._finalized_best_frames:
+            best_frame = dict(self._finalized_best_frames[track_id])
+        grading_started = perf_counter()
+        verdict: FishVerdict = self._grading_engine.evaluate(
+            track_id,
+            crop,
+            list(parts),
+            stabilize=stabilize,
+            frame_id=frame_id,
+            frame_quality=quality_payload,
+            best_frame=best_frame,
+            model2_available=model2_available,
+        )
+        self.last_grading_seconds = perf_counter() - grading_started
+        votes = {name: round(value, 4) for name, value in verdict.weighted_scores.items()}
+        analysis = verdict.to_dict()
+        analysis["performance"] = {
+            "model2_inference_ms": round(self.last_inference_seconds * 1000, 3) if self.last_inference_seconds is not None else None,
+            "grading_engine_ms": round(self.last_grading_seconds * 1000, 3) if self.last_grading_seconds is not None else None,
+            "hsv_processing_ms": (
+                round(self._grading_engine.last_hsv_processing_seconds * 1000, 3)
+                if self._grading_engine.last_hsv_processing_seconds is not None else None
+            ),
+        }
+        analysis["model2_evidence"] = {
+            "checkpoint_name": self.model_path.name if self.model_path else None,
+            "checkpoint_sha256": self.checkpoint_sha256,
+            "available": model2_available,
+            "detector_threshold": self.confidence_threshold,
+            "part_evidence_threshold": self._grading_engine.config.minimum_part_confidence,
+            "final_verdict_threshold": self._grading_engine.config.active_final_threshold(),
+            # Kept for existing readers; this is raw detector confidence, not
+            # a fish-grade probability or the final support threshold.
+            "confidence_threshold": self.confidence_threshold,
+            "note": "Model 2 values are detector evidence/support scores, not calibrated whole-fish class probabilities.",
+        }
+        analysis["traceability"] = {
+            "model2_checkpoint": self.model_path.name if self.model_path else None,
+            "model2_checkpoint_sha256": self.checkpoint_sha256,
+            "grading_config_version": self._grading_engine.config.config_version,
+            "part_weights": {"Body": self._grading_engine.config.body_weight, "Head": self._grading_engine.config.head_weight, "Tail": self._grading_engine.config.tail_weight},
+            "model2_detector_threshold": self.confidence_threshold,
+            "minimum_part_evidence_threshold": self._grading_engine.config.minimum_part_confidence,
+            "minimum_grade_margin": self._grading_engine.config.minimum_grade_margin,
+            "quality_threshold": self.confidence_threshold,
+            "final_verdict_threshold": self._grading_engine.config.active_final_threshold(),
+            "minimum_original_weight_coverage": self._grading_engine.config.active_minimum_coverage(),
+            "grading_mode": self._grading_engine.config.grading_mode,
+            "quality_inference_mode": inference_metadata.get("mode", self.quality_inference_mode),
+            "roi_padding": self.roi_padding,
+            "model2_available": model2_available,
+        }
+        analysis["model2_available"] = model2_available
+        analysis["quality_inference"] = dict(inference_metadata)
+        return FishQualityObservation(track_id, verdict.final_grade, verdict.final_score, tuple(parts), votes, analysis)
+
     def predict(
         self,
         crop_bgr: Any,
@@ -247,97 +377,138 @@ class YoloQualityModel:
         parent_bbox: tuple[float, float, float, float] | None = None,
         frame_shape: tuple[int, ...] | None = None,
     ) -> FishQualityObservation:
-        """Run Model 2 on exactly one bounded Model 1 crop and fuse its evidence.
-
-        Live tracking uses confidence-weighted temporal evidence. Still-image
-        analysis passes ``stabilize=False`` so its one real observation can be
-        reported without pretending it has multiple video frames behind it.
-        """
+        """Run Model 2 on one Model 1 crop and use the shared grading engine."""
 
         if self.model is None:
             raise YoloQualityModelInferenceError(self.error or "Model 2 is not loaded.")
         try:
             crop = validate_image(crop_bgr, name="Fish ROI")
-            height, width = crop.shape[:2]
-            assessment: FrameQualityAssessment | None = None
-            if frame_quality is None:
-                assessment = assess_frame_quality(
-                    crop,
-                    detection_confidence=detection_confidence,
-                    bbox=parent_bbox,
-                    frame_shape=frame_shape,
-                    frame_id=frame_id,
-                    config=self._frame_quality_config,
-                )
-                quality_payload: Mapping[str, object] = assessment.to_dict()
-            else:
-                quality_payload = frame_quality
-            with self._lock:
-                started = perf_counter()
-                results = self.model.predict(source=crop, conf=self.confidence_threshold, imgsz=self.image_size, device=self.device, verbose=False)
-                self.last_inference_seconds = perf_counter() - started
-            parts = self._part_detections(results[0], width, height, self.confidence_threshold) if results else []
-            best_frame: dict[str, object] | None = None
-            if assessment is not None and (not stabilize or track_id not in self._finalized_best_frames):
-                # Still-image calls use an isolated candidate so separate
-                # uploads with local index 1 never share best-frame state.
-                selector = self._best_frame_selector if stabilize else BestFrameSelector(self._frame_quality_config)
-                selected = selector.consider(
-                    track_id=track_id,
-                    frame_id=frame_id,
-                    assessment=assessment,
-                    visible_regions=sorted({part.region for part in parts}),
-                )
-                if selected is not None:
-                    best_frame = selected.to_dict()
-                    if stabilize and selected.best_frame_id == frame_id and self._grading_engine.config.save_best_fish_crop:
-                        self._best_crop_data[track_id] = (crop.copy(), tuple(parts), selected)
-            elif stabilize and track_id in self._finalized_best_frames:
-                best_frame = dict(self._finalized_best_frames[track_id])
-            grading_started = perf_counter()
-            verdict: FishVerdict = self._grading_engine.evaluate(
-                track_id,
+            parts = self._infer_parts(crop)
+            return self._grade_parts(
                 crop,
+                track_id,
                 parts,
                 stabilize=stabilize,
                 frame_id=frame_id,
-                frame_quality=quality_payload,
-                best_frame=best_frame,
+                frame_quality=frame_quality,
+                detection_confidence=detection_confidence,
+                parent_bbox=parent_bbox,
+                frame_shape=frame_shape,
+                inference_metadata={"mode": "crop", "roi_padding": self.roi_padding},
             )
-            self.last_grading_seconds = perf_counter() - grading_started
-            votes = {name: round(value, 4) for name, value in verdict.weighted_scores.items()}
-            grade = verdict.final_grade
-            grade_confidence = verdict.final_score
-            analysis = verdict.to_dict()
-            analysis["performance"] = {
-                "model2_inference_ms": round(self.last_inference_seconds * 1000, 3) if self.last_inference_seconds is not None else None,
-                "grading_engine_ms": round(self.last_grading_seconds * 1000, 3) if self.last_grading_seconds is not None else None,
-                "hsv_processing_ms": (
-                    round(self._grading_engine.last_hsv_processing_seconds * 1000, 3)
-                    if self._grading_engine.last_hsv_processing_seconds is not None else None
-                ),
-            }
-            analysis["model2_evidence"] = {
-                "checkpoint_name": self.model_path.name if self.model_path else None,
-                "checkpoint_sha256": self.checkpoint_sha256,
-                "confidence_threshold": self.confidence_threshold,
-                "note": "Model 2 values are detection evidence/support scores, not calibrated whole-fish class probabilities.",
-            }
-            analysis["traceability"] = {
-                "model2_checkpoint": self.model_path.name if self.model_path else None,
-                "model2_checkpoint_sha256": self.checkpoint_sha256,
-                "grading_config_version": self._grading_engine.config.config_version,
-                "part_weights": {"Body": self._grading_engine.config.body_weight, "Head": self._grading_engine.config.head_weight, "Tail": self._grading_engine.config.tail_weight},
-                "quality_threshold": self.confidence_threshold,
-                "final_verdict_threshold": self._grading_engine.config.active_final_threshold(),
-                "minimum_original_weight_coverage": self._grading_engine.config.active_minimum_coverage(),
-                "grading_mode": self._grading_engine.config.grading_mode,
-            }
-            return FishQualityObservation(track_id, grade, grade_confidence, tuple(parts), votes, analysis)
         except YoloQualityModelInferenceError:
             raise
         except Exception as exc:
             raise YoloQualityModelInferenceError(f"Model 2 YOLO quality inference failed: {exc}") from exc
+
+    def unavailable_observation(
+        self,
+        crop_bgr: Any,
+        track_id: int,
+        *,
+        stabilize: bool = True,
+        frame_id: int | str | None = None,
+        detection_confidence: float | None = None,
+        parent_bbox: tuple[float, float, float, float] | None = None,
+        frame_shape: tuple[int, ...] | None = None,
+    ) -> FishQualityObservation:
+        """Record an explicit abstention when the local Model 2 is unavailable.
+
+        This never fabricates a part detection.  It lets the canonical policy
+        emit ``UG_MODEL2_UNAVAILABLE`` into live history instead of leaving a
+        counted fish with an unexplained blank quality field.
+        """
+
+        try:
+            crop = validate_image(crop_bgr, name="Fish ROI")
+            return self._grade_parts(
+                crop,
+                track_id,
+                (),
+                stabilize=stabilize,
+                frame_id=frame_id,
+                frame_quality={"model2_unavailable": True, "model2_error": self.error},
+                detection_confidence=detection_confidence,
+                parent_bbox=parent_bbox,
+                frame_shape=frame_shape,
+                inference_metadata={"mode": self.quality_inference_mode, "roi_padding": self.roi_padding, "model2_status": "unavailable"},
+                model2_available=False,
+            )
+        except Exception as exc:
+            raise YoloQualityModelInferenceError(f"Could not record Model 2 unavailability: {exc}") from exc
+
+    @staticmethod
+    def _part_to_crop(part: PartDetection, crop_origin: tuple[int, int], crop_shape: tuple[int, ...]) -> PartDetection | None:
+        """Translate one full-frame box into one bounded parent crop."""
+
+        offset_x, offset_y = crop_origin
+        height, width = crop_shape[:2]
+        bounded = clamp_bbox(
+            (part.bbox[0] - offset_x, part.bbox[1] - offset_y, part.bbox[2] - offset_x, part.bbox[3] - offset_y),
+            width,
+            height,
+        )
+        if bounded is None:
+            return None
+        return PartDetection.from_source_class(part.source_class_id, part.confidence, bounded)
+
+    def predict_full_frame(
+        self,
+        frame_bgr: Any,
+        parents: Sequence[ParentAnchor],
+        *,
+        stabilize: bool = True,
+        frame_id: int | str | None = None,
+    ) -> dict[int, tuple[FishQualityObservation, CropBounds]]:
+        """Run Model 2 once on a frame and conservatively assign evidence.
+
+        The returned part boxes remain crop-local to preserve the same renderer
+        and grading input shape used by crop mode.
+        """
+
+        if self.model is None:
+            raise YoloQualityModelInferenceError(self.error or "Model 2 is not loaded.")
+        try:
+            frame = validate_image(frame_bgr, name="Quality full frame")
+            frame_parts = self._infer_parts(frame)
+            associations = associate_parts_to_parents(frame_parts, parents)
+            results: dict[int, tuple[FishQualityObservation, CropBounds]] = {}
+            for parent in parents:
+                crop, bounds = crop_fish(frame, parent.bbox, padding=self.roi_padding)
+                assigned_parts = [
+                    translated
+                    for item in associations
+                    if item.status == "ASSIGNED" and item.track_id == parent.track_id
+                    if (translated := self._part_to_crop(item.part, bounds.origin, crop.shape)) is not None
+                ]
+                summary = association_summary(associations, parent.track_id)
+                quality_payload: dict[str, object] = {"association": summary}
+                if summary["ambiguous"]:
+                    quality_payload["association_ambiguous"] = True
+                observation = self._grade_parts(
+                    crop,
+                    parent.track_id,
+                    assigned_parts,
+                    stabilize=stabilize,
+                    frame_id=frame_id,
+                    frame_quality=quality_payload,
+                    detection_confidence=parent.confidence,
+                    parent_bbox=parent.bbox,
+                    frame_shape=frame.shape,
+                    inference_metadata={
+                        "mode": "full_frame",
+                        "roi_padding": self.roi_padding,
+                        "crop_bounds": [bounds.x1, bounds.y1, bounds.x2, bounds.y2],
+                        "padding_hit_frame_limits": bounds.x1 == 0 or bounds.y1 == 0 or bounds.x2 == frame.shape[1] or bounds.y2 == frame.shape[0],
+                        "association": summary,
+                    },
+                )
+                results[parent.track_id] = (observation, bounds)
+            return results
+        except YoloQualityModelInferenceError:
+            raise
+        except Exception as exc:
+            raise YoloQualityModelInferenceError(f"Model 2 full-frame inference failed: {exc}") from exc
 
     @staticmethod
     def _safe_frame_token(frame_id: int | str | None) -> str:
@@ -417,6 +588,8 @@ class YoloQualityModel:
             ),
             "checkpoint_name": self.model_path.name if self.model_path else None,
             "checkpoint_sha256": self.checkpoint_sha256,
+            "quality_inference_mode": self.quality_inference_mode,
+            "roi_padding": self.roi_padding,
             "grading_config": self._grading_engine.config.to_dict(),
             "frame_quality_config": self._frame_quality_config.to_dict(),
             "best_frame_tracks": len(self._best_frame_selector._best_by_track),

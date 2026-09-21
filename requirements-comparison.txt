@@ -1,4 +1,4 @@
--r requirements.txt
+-r requirements-legacy-research.txt
 effdet==0.4.1
 matplotlib
 nbformat

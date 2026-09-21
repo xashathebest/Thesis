@@ -1,0 +1,54 @@
+{
+  "checks": {
+    "association": {
+      "detail": "Independent validation has not been recorded as complete.",
+      "status": "PENDING"
+    },
+    "camera": {
+      "calibration_confirmed": false,
+      "detail": "Camera calibration requires explicit operator confirmation and a locked profile.",
+      "locked": false,
+      "status": "PENDING"
+    },
+    "dataset": {
+      "detail": "Independent validation and locked-test claims require audit PASS.",
+      "independent_test_status": "FAIL",
+      "independent_validation_status": "FAIL",
+      "status": "BLOCKED"
+    },
+    "end_to_end": {
+      "detail": "Independent validation has not been recorded as complete.",
+      "status": "PENDING"
+    },
+    "model1": {
+      "detail": "Independent validation has not been recorded as complete.",
+      "status": "PENDING"
+    },
+    "model2": {
+      "detail": "Independent validation has not been recorded as complete.",
+      "status": "PENDING"
+    },
+    "software": {
+      "detail": "Regression suite pass must be recorded explicitly.",
+      "status": "PASS"
+    },
+    "tracking": {
+      "detail": "Independent validation has not been recorded as complete.",
+      "status": "PENDING"
+    }
+  },
+  "final_certification": {
+    "blockers": [
+      "camera",
+      "dataset",
+      "model1",
+      "model2",
+      "association",
+      "tracking",
+      "end_to_end"
+    ],
+    "detail": "No percentage readiness score is calculated; every required gate must pass.",
+    "status": "BLOCKED"
+  },
+  "scope": "validation_readiness_checklist"
+}

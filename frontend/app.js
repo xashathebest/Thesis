@@ -21,11 +21,16 @@ const elements = {
   reviewEmpty: $("review-empty"), reviewWrap: $("review-table-wrap"), reviewBody: $("review-body"), reviewPrev: $("review-prev"), reviewNext: $("review-next"), reviewPage: $("review-page"),
   exportButton: $("export-button"), sidebarExport: $("sidebar-export"), exportModal: $("export-modal"), exportForm: $("export-form"), closeExport: $("close-export-button"), cancelExport: $("cancel-export-button"), dateRange: $("date-range"), exportStartDate: $("export-start-date"), exportEndDate: $("export-end-date"),
   settingsButton: $("settings-button"), sidebarSettings: $("sidebar-settings"), settingsDrawer: $("settings-drawer"), closeSettings: $("close-settings-button"), scrim: $("scrim"),
+  cameraSettingsButton: $("camera-settings-button"), cameraCalibrationDrawer: $("camera-calibration-drawer"), closeCameraCalibration: $("close-camera-calibration-button"),
+  cameraDeviceName: $("camera-device-name"), cameraConnection: $("camera-connection"), cameraLockBadge: $("camera-lock-badge"), cameraCaptureResolution: $("camera-capture-resolution"), cameraProcessingResolution: $("camera-processing-resolution"), cameraHardwareFps: $("camera-hardware-fps"), cameraBackend: $("camera-backend"), cameraProfileName: $("camera-profile-name"), cameraLockState: $("camera-lock-state"),
+  calibrationMode: $("calibration-mode-toggle"), cameraControlNote: $("camera-control-note"), cameraControlList: $("camera-control-list"), imageStatistics: $("image-statistics-section"), statFrameBrightness: $("stat-frame-brightness"), statFishBrightness: $("stat-fish-brightness"), statBackgroundBrightness: $("stat-background-brightness"), statContrast: $("stat-contrast"), cameraConditionWarning: $("camera-condition-warning"),
+  cameraReset: $("camera-reset-button"), cameraLoadProfile: $("camera-load-profile-button"), cameraSaveProfile: $("camera-save-profile-button"), cameraLock: $("camera-lock-button"), cameraCalibrationMessage: $("camera-calibration-message"),
+  cameraProfileConfirmation: $("camera-profile-confirmation"), cameraRecordEmptyReference: $("camera-record-empty-reference-button"), cameraRecordFishReference: $("camera-record-fish-reference-button"), cameraOperatorName: $("camera-operator-name"), cameraInstallationDeviceIdentity: $("camera-install-device-identity"), cameraInstallationHeight: $("camera-install-camera-height"), cameraInstallationAngle: $("camera-install-camera-angle"), cameraInstallationConveyor: $("camera-install-conveyor-position"), cameraInstallationLighting: $("camera-install-lighting-position"), cameraConfirmProfile: $("camera-confirm-profile-button"),
   slider: $("confidence-slider"), settingsThreshold: $("settings-threshold"), confidenceMinus: $("confidence-minus"), confidencePlus: $("confidence-plus"), resetConfidence: $("reset-confidence-button"),
   qualitySlider: $("quality-confidence-slider"), settingsQualityThreshold: $("settings-quality-threshold"), qualityConfidenceMinus: $("quality-confidence-minus"), qualityConfidencePlus: $("quality-confidence-plus"), resetQualityConfidence: $("reset-quality-confidence-button"),
   detectorModelName: $("detector-model-name"), detectorModelStatus: $("detector-model-status"), detectorCheckpoint: $("detector-checkpoint"), detectorDevice: $("detector-device"), detectorThreshold: $("detector-threshold"),
   segmenterModelName: $("segmenter-model-name"), segmenterModelStatus: $("segmenter-model-status"), segmenterCheckpoint: $("segmenter-checkpoint"), segmenterDevice: $("segmenter-device"), segmenterInference: $("segmenter-inference"),
-  settingsResolution: $("settings-resolution"), settingsFps: $("settings-fps"),
+  settingsResolution: $("settings-resolution"), settingsFps: $("settings-fps"), settingsQualityMode: $("settings-quality-mode"), settingsQualityInterval: $("settings-quality-interval"), settingsQualityRoiPadding: $("settings-quality-roi-padding"),
 };
 
 const overlayControls = {
@@ -54,6 +59,8 @@ let defaultQualityConfidence = 0.25;
 let partQualityChart = null;
 let colorTrendChart = null;
 let statusRequestInFlight = false;
+let cameraCalibrationStatus = null;
+const cameraControlTimers = new Map();
 const kpiCards = new Map();
 const featureCards = new Map();
 // Match the shipped Model 2 operating point before the first status refresh.
@@ -231,7 +238,13 @@ function readableVerdictStatus(value) {
   const labels = { AUTO_GRADED: "Automatically graded", NEEDS_REVIEW: "Needs review", NOT_AVAILABLE: "Verdict status unavailable" };
   return labels[String(value || "").toUpperCase()] || titleCase(value);
 }
-function verdictReason(event) { return { code: eventValue(event, "verdict_reason_code"), text: eventValue(event, "verdict_reason_text") }; }
+function verdictReason(event) {
+  const stored = eventValue(event, "reason_codes");
+  const codes = Array.isArray(stored) ? stored.map(String).filter(Boolean) : typeof stored === "string" ? stored.split(",").map((item) => item.trim()).filter(Boolean) : [];
+  const code = String(eventValue(event, "verdict_reason_code") || codes[0] || "");
+  if (code && !codes.includes(code)) codes.unshift(code);
+  return { code, codes, label: codes.join(", ") || code, text: eventValue(event, "verdict_reason_text") };
+}
 function needsReview(event) { return verdictStatus(event) === "NEEDS_REVIEW"; }
 function observedRegions(event) {
   const stored = eventValue(event, "observed_regions");
@@ -252,6 +265,7 @@ function partFor(event, region) {
   return parts && typeof parts === "object" ? (parts[region] || parts[region.toLowerCase()] || {}) : {};
 }
 function partStatus(part) {
+  if (part && part.visibility_state) return titleCase(String(part.visibility_state).replaceAll("_", " "));
   if (part && part.status) return titleCase(part.status);
   return part?.present ? "Observed" : "Unknown / not observed";
 }
@@ -289,7 +303,7 @@ function appendFullAnalysis(container, event) {
   const aiGrade = aiFinalGrade(event); const support = weightedFinalSupport(event); const evidence = model2BestEvidence(event); const manual = manualGrade(event); const reason = verdictReason(event);
   appendAnalysisBlock(body, "Final verdict", (block) => {
     const grid = document.createElement("div"); grid.className = "analysis-data-grid";
-    addAnalysisDatum(grid, "Original AI verdict", aiGrade); addAnalysisDatum(grid, "Weighted final support", scoreText(support)); addAnalysisDatum(grid, "Verdict status", readableVerdictStatus(verdictStatus(event))); addAnalysisDatum(grid, "Reason code", reason.code || "-");
+    addAnalysisDatum(grid, "Original AI verdict", aiGrade); addAnalysisDatum(grid, "Weighted final support", scoreText(support)); addAnalysisDatum(grid, "Verdict status", readableVerdictStatus(verdictStatus(event))); addAnalysisDatum(grid, "Reason code(s)", reason.label || "-");
     if (manual) addAnalysisDatum(grid, "Manual final grade", manual); block.append(grid);
     if (reason.text) { const text = document.createElement("p"); text.textContent = reason.text; block.append(text); }
   });
@@ -409,7 +423,7 @@ function renderKpis(data) {
     ["Inspection FPS", `${Number(data.fps || 0).toFixed(1)}`, "Frames per second"],
     ["Current fish ID", live ? `Fish #${live.track_id}` : "-", live?.live_track ? "Current Model 1 track" : "No active track"],
     ["Current final grade", liveGrade, live?.live_track ? "Current Model 2 evidence" : "Latest completed fish"],
-    ["Average confidence", averageSupport == null ? "-" : formatPercent(averageSupport), "Average weighted support"]
+    ["Average support", averageSupport == null ? "-" : formatPercent(averageSupport), "Average weighted support"]
   );
   reconcileCards(elements.kpiGrid, kpiCards, cards, ([label, value, note, emphasis]) => kpiCard(label, value, note, Boolean(emphasis)));
   elements.threshold.textContent = formatPercent(Number(data.detection_confidence_threshold) * 100);
@@ -474,7 +488,7 @@ function renderAnalytics(analytics) {
   const points = throughput.map((item, index) => `${(index / denominator) * 560},${166 - (Number(item.total || 0) / maxTotal) * 142}`).join(" ");
   elements.throughputLine.setAttribute("points", points || "0,166");
   elements.throughputCaption.textContent = `${throughput.length} processed`;
-  if (confidenceAvailable) elements.averageGradeConfidence.textContent = `M1 ${formatPercent(analytics.average_detection_confidence)} · M2 ${formatPercent(analytics.average_grade_confidence)}`;
+  if (confidenceAvailable) elements.averageGradeConfidence.textContent = `M1 raw ${formatPercent(analytics.average_detection_confidence)} · final support ${formatPercent(analytics.average_grade_confidence)}`;
 }
 
 function detectedFeatures(event) {
@@ -538,13 +552,46 @@ function renderModel(data) {
   elements.segmenterModelName.textContent = segmenter.name || "Quality Model"; elements.segmenterModelStatus.textContent = titleCase(segmenter.status); elements.segmenterCheckpoint.textContent = segmenter.checkpoint_resolved ? "Resolved" : "Unresolved"; elements.segmenterDevice.textContent = segmenter.device || "—"; elements.segmenterInference.textContent = diagnostic.last_inference_ms == null ? "No measurement" : `${diagnostic.last_inference_ms} ms`;
 }
 
+function renderGradingSettings(data) {
+  let section = $("grading-settings-section");
+  if (!section) {
+    section = document.createElement("section");
+    section.id = "grading-settings-section";
+    section.className = "settings-section";
+    section.innerHTML = "<h3>Grading policy</h3><p class=\"muted\">Read-only policy snapshot. Weighted support is not a calibrated probability.</p><dl class=\"settings-list\"><div><dt>Mode</dt><dd id=\"settings-grading-mode\">—</dd></div><div><dt>Part evidence threshold</dt><dd id=\"settings-part-evidence-threshold\">—</dd></div><div><dt>Final verdict threshold</dt><dd id=\"settings-final-verdict-threshold\">—</dd></div><div><dt>Minimum grade margin</dt><dd id=\"settings-grade-margin\">—</dd></div><div><dt>Required coverage</dt><dd id=\"settings-coverage\">—</dd></div><div><dt>Fixed weights</dt><dd id=\"settings-part-weights\">—</dd></div></dl>";
+    const cameraSection = [...elements.settingsDrawer.querySelectorAll(".settings-section")]
+      .find((candidate) => candidate.querySelector("h3")?.textContent?.trim() === "Camera");
+    if (cameraSection) cameraSection.before(section); else elements.settingsDrawer.append(section);
+  }
+  const rules = data.grading_rules && typeof data.grading_rules === "object" ? data.grading_rules : {};
+  const text = (id, value) => { const target = $(id); if (target) target.textContent = value; };
+  const fraction = (value) => Number.isFinite(Number(value)) ? formatPercent(Number(value) * 100) : "—";
+  const weights = rules.part_weights && typeof rules.part_weights === "object" ? rules.part_weights : {};
+  text("settings-grading-mode", rules.grading_mode || "No production policy");
+  text("settings-part-evidence-threshold", fraction(rules.minimum_part_confidence));
+  text("settings-final-verdict-threshold", fraction(rules.final_verdict_threshold));
+  text("settings-grade-margin", fraction(rules.minimum_grade_margin));
+  text("settings-coverage", fraction(rules.minimum_original_weight_coverage));
+  text("settings-part-weights", `Body ${fraction(weights.Body)} / Head ${fraction(weights.Head)} / Tail ${fraction(weights.Tail)}`);
+}
+
 function syncSettings(data) {
   const threshold = Math.round(Number(data.detection_confidence_threshold || 0) * 100);
   elements.slider.value = String(threshold); elements.settingsThreshold.textContent = `${threshold}%`;
   const qualityThreshold = Math.round(Number(data.quality_confidence_threshold || 0) * 100);
   elements.qualitySlider.value = String(qualityThreshold); elements.settingsQualityThreshold.textContent = `${qualityThreshold}%`;
+  const qualityRuntime = data.model_info?.quality || {};
+  elements.settingsQualityMode.textContent = qualityRuntime.quality_inference_mode || qualityRuntime.diagnostics?.quality_inference_mode || "—";
+  const interval = Number(qualityRuntime.quality_interval);
+  elements.settingsQualityInterval.textContent = Number.isFinite(interval) && interval > 0 ? `Every ${interval} processed frame${interval === 1 ? "" : "s"}` : "—";
+  const padding = Number(qualityRuntime.roi_padding ?? qualityRuntime.diagnostics?.roi_padding);
+  elements.settingsQualityRoiPadding.textContent = Number.isFinite(padding) ? `${padding} px` : "—";
+  const policyLocked = Boolean(data.policy_settings_locked ?? ["starting", "running"].includes(data.inspection_status));
+  [elements.slider, elements.confidenceMinus, elements.confidencePlus, elements.resetConfidence, elements.qualitySlider, elements.qualityConfidenceMinus, elements.qualityConfidencePlus, elements.resetQualityConfidence]
+    .forEach((control) => { if (control) { control.disabled = policyLocked; control.title = policyLocked ? "Stop inspection before changing this policy setting." : ""; } });
   const display = data.display_settings || {};
   Object.entries(overlayControls).forEach(([name, controls]) => controls.forEach((control) => { if (control) control.checked = Boolean(display[name]); }));
+  renderGradingSettings(data);
 }
 
 function render(data) {
@@ -590,10 +637,118 @@ function showView(view) {
   if (view === "review") loadReviewQueue(true);
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
-function openSettings() { elements.settingsDrawer.classList.add("open"); elements.settingsDrawer.setAttribute("aria-hidden", "false"); elements.scrim.classList.remove("hidden"); }
-function closeSettings() { elements.settingsDrawer.classList.remove("open"); elements.settingsDrawer.setAttribute("aria-hidden", "true"); if (elements.exportModal.classList.contains("hidden")) elements.scrim.classList.add("hidden"); }
-function openExport() { elements.exportModal.classList.remove("hidden"); elements.scrim.classList.remove("hidden"); }
-function closeExport() { elements.exportModal.classList.add("hidden"); if (!elements.settingsDrawer.classList.contains("open")) elements.scrim.classList.add("hidden"); }
+function updateScrim() {
+  const anyOpen = elements.settingsDrawer.classList.contains("open") || elements.cameraCalibrationDrawer.classList.contains("open") || !elements.exportModal.classList.contains("hidden");
+  elements.scrim.classList.toggle("hidden", !anyOpen);
+}
+function openSettings() { elements.settingsDrawer.classList.add("open"); elements.settingsDrawer.setAttribute("aria-hidden", "false"); updateScrim(); }
+function closeSettings() { elements.settingsDrawer.classList.remove("open"); elements.settingsDrawer.setAttribute("aria-hidden", "true"); updateScrim(); }
+function openExport() { elements.exportModal.classList.remove("hidden"); updateScrim(); }
+function closeExport() { elements.exportModal.classList.add("hidden"); updateScrim(); }
+function openCameraCalibration() { closeSettings(); elements.cameraCalibrationDrawer.classList.add("open"); elements.cameraCalibrationDrawer.setAttribute("aria-hidden", "false"); updateScrim(); loadCameraCalibration(); }
+function closeCameraCalibration() { elements.cameraCalibrationDrawer.classList.remove("open"); elements.cameraCalibrationDrawer.setAttribute("aria-hidden", "true"); updateScrim(); }
+
+function cameraNumber(value) { return value == null || Number.isNaN(Number(value)) ? "-" : String(Number(value)); }
+function setCameraCalibrationMessage(message, error = false) { elements.cameraCalibrationMessage.textContent = message; elements.cameraCalibrationMessage.classList.toggle("error", error); }
+function cameraEditable(status) { return Boolean(status?.available && status?.calibration_mode && !status?.locked); }
+function fillCameraField(input, value) { if (input && !input.value.trim() && value != null) input.value = String(value); }
+function researchInstallationPayload() {
+  return {
+    device_identity: elements.cameraInstallationDeviceIdentity.value.trim(),
+    camera_height: elements.cameraInstallationHeight.value.trim(),
+    camera_angle: elements.cameraInstallationAngle.value.trim(),
+    conveyor_position: elements.cameraInstallationConveyor.value.trim(),
+    lighting_position: elements.cameraInstallationLighting.value.trim(),
+  };
+}
+
+function renderCameraControls(status) {
+  const properties = status?.capabilities?.properties || {};
+  const actual = status?.actual || {};
+  const editable = cameraEditable(status);
+  elements.cameraControlList.replaceChildren();
+  Object.entries(properties).forEach(([key, capability]) => {
+    const supported = Boolean(capability?.supported);
+    const row = document.createElement("div"); row.className = `camera-control${supported ? "" : " unsupported"}`;
+    const head = document.createElement("div"); head.className = "camera-control-head";
+    const label = document.createElement("label"); label.textContent = capability?.label || titleCase(key);
+    const output = document.createElement("output"); output.textContent = supported ? (capability?.control === "toggle" ? (actual[key] ? "ON" : "OFF") : cameraNumber(actual[key])) : "Not supported";
+    head.append(label, output); row.append(head);
+    if (!supported) {
+      const note = document.createElement("small"); note.textContent = capability?.reason || "Not supported by this camera/backend"; row.append(note);
+    } else if (capability?.control === "toggle") {
+      const control = document.createElement("label"); control.className = "camera-control-toggle"; control.append(document.createTextNode("Physical camera control"));
+      const input = document.createElement("input"); input.type = "checkbox"; input.checked = Boolean(actual[key]); input.disabled = !editable; input.setAttribute("aria-label", capability?.label || key);
+      input.addEventListener("change", () => postCameraSettings({ [key]: input.checked })); control.append(input); row.append(control);
+    } else {
+      const range = Array.isArray(capability?.range) && capability.range.length === 2 ? capability.range : null;
+      const input = document.createElement("input"); input.type = range ? "range" : "number"; input.value = actual[key] == null ? "" : String(actual[key]); input.disabled = !editable; input.setAttribute("aria-label", capability?.label || key);
+      if (range) { input.min = String(range[0]); input.max = String(range[1]); input.step = capability?.step == null ? "any" : String(capability.step); }
+      else { input.step = "any"; input.placeholder = "Driver value"; }
+      const apply = () => { if (input.value !== "") postCameraSettings({ [key]: Number(input.value) }); };
+      if (range) input.addEventListener("input", () => { output.textContent = input.value; clearTimeout(cameraControlTimers.get(key)); cameraControlTimers.set(key, setTimeout(apply, 160)); });
+      input.addEventListener("change", apply); row.append(input);
+      const note = document.createElement("small"); note.textContent = range ? "Hardware range reported by the active backend." : "This backend does not report a safe slider range; enter a value from the camera driver."; row.append(note);
+    }
+    elements.cameraControlList.append(row);
+  });
+}
+
+function renderCameraCalibration(status) {
+  cameraCalibrationStatus = status;
+  const camera = status?.camera || {};
+  const available = Boolean(status?.available);
+  const locked = Boolean(status?.locked);
+  const calibration = Boolean(status?.calibration_mode);
+  elements.cameraDeviceName.textContent = camera.device_name || "Camera unavailable";
+  elements.cameraConnection.textContent = available ? "Connected to the shared inspection capture" : (status?.capabilities?.reason || "Start inspection to connect");
+  elements.cameraLockBadge.textContent = locked ? "LOCKED" : "UNLOCKED"; elements.cameraLockBadge.classList.toggle("locked", locked);
+  elements.cameraCaptureResolution.textContent = Array.isArray(camera.capture_resolution) ? `${camera.capture_resolution[0]} x ${camera.capture_resolution[1]}` : "-";
+  elements.cameraProcessingResolution.textContent = Array.isArray(latestStatus?.frame_size) ? `${latestStatus.frame_size[0]} x ${latestStatus.frame_size[1]}` : "-";
+  elements.cameraHardwareFps.textContent = cameraNumber(camera.fps); elements.cameraBackend.textContent = camera.backend || "-";
+  elements.cameraProfileName.textContent = camera.profile_name || "Not saved"; elements.cameraLockState.textContent = locked ? "Locked" : "Unlocked";
+  elements.calibrationMode.checked = calibration; elements.calibrationMode.disabled = !available || locked;
+  elements.cameraControlNote.textContent = available ? (locked ? "Unlock to calibrate" : calibration ? "Validated hardware controls" : "Enable Calibration Mode to adjust") : "Camera is not running";
+  elements.imageStatistics.classList.toggle("hidden", !calibration);
+  const stats = status?.image_statistics || {};
+  elements.statFrameBrightness.textContent = cameraNumber(stats.frame_brightness); elements.statFishBrightness.textContent = cameraNumber(stats.fish_roi_brightness); elements.statBackgroundBrightness.textContent = cameraNumber(stats.background_brightness); elements.statContrast.textContent = cameraNumber(stats.fish_background_contrast);
+  const warning = status?.condition_warning; elements.cameraConditionWarning.classList.toggle("hidden", !warning); elements.cameraConditionWarning.textContent = warning?.message || "";
+  const editable = cameraEditable(status); elements.cameraReset.disabled = !editable; elements.cameraLoadProfile.disabled = !editable; elements.cameraSaveProfile.disabled = !editable; elements.cameraLock.disabled = !available;
+  elements.cameraLock.textContent = locked ? "Unlock camera settings" : "Lock inspection camera";
+  const profile = status?.profile || {};
+  const confirmation = profile?.operator_confirmation || {};
+  const references = status?.pending_reference_scenes || profile?.reference_scenes || {};
+  const emptyReference = references?.empty_conveyor;
+  elements.cameraProfileConfirmation.textContent = confirmation?.confirmed
+    ? `Confirmed${confirmation.confirmed_at ? ` · ${confirmation.confirmed_at}` : ""}`
+    : (emptyReference ? "Empty-conveyor reference recorded; save then confirm" : "Record an empty-conveyor reference first");
+  const installation = profile?.installation || {};
+  fillCameraField(elements.cameraOperatorName, confirmation?.operator_name);
+  fillCameraField(elements.cameraInstallationDeviceIdentity, installation?.device_identity);
+  fillCameraField(elements.cameraInstallationHeight, installation?.camera_height);
+  fillCameraField(elements.cameraInstallationAngle, installation?.camera_angle);
+  fillCameraField(elements.cameraInstallationConveyor, installation?.conveyor_position);
+  fillCameraField(elements.cameraInstallationLighting, installation?.lighting_position);
+  elements.cameraRecordEmptyReference.disabled = !editable;
+  elements.cameraRecordFishReference.disabled = !editable;
+  elements.cameraConfirmProfile.disabled = !editable;
+  renderCameraControls(status);
+}
+
+async function loadCameraCalibration() {
+  try {
+    const response = await fetch("/api/camera/settings"); const data = await response.json(); if (!response.ok) throw new Error(data.detail || "Camera settings unavailable.");
+    renderCameraCalibration(data);
+  } catch (error) { setCameraCalibrationMessage(error instanceof Error ? error.message : "Camera settings unavailable.", true); }
+}
+async function cameraRequest(path, payload = undefined, successMessage = null) {
+  try {
+    const options = payload === undefined ? { method: "POST" } : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) };
+    const response = await fetch(path, options); const data = await response.json(); if (!response.ok) throw new Error(data.detail || "Camera request was not accepted.");
+    renderCameraCalibration(data.camera || data); setCameraCalibrationMessage(data.success === false ? "The camera returned a different value; review the readback." : successMessage || (data.policy_session_id ? "Camera setting applied. Active evidence was reset and a new policy session started." : "Camera setting applied."), data.success === false); return data;
+  } catch (error) { setCameraCalibrationMessage(error instanceof Error ? error.message : "Camera request failed.", true); await loadCameraCalibration(); return null; }
+}
+function postCameraSettings(values) { return cameraRequest("/api/camera/settings", values); }
 
 async function legacyLoadHistoryOld(resetPage = false) {
   if (resetPage) historyState.page = 1;
@@ -627,7 +782,7 @@ function renderHistoryRows(rows) {
   elements.historyBody.replaceChildren();
   rows.forEach((event) => {
     const evidence = model2BestEvidence(event); const reason = verdictReason(event); const row = document.createElement("tr"); const fish = historyCell(event.fish_label || `Fish #${event.track_id}`); fish.tabIndex = 0; fish.title = "Open full analysis"; fish.classList.add("history-open"); fish.addEventListener("click", () => openHistoryAnalysis(event)); fish.addEventListener("keydown", (key) => { if (key.key === "Enter" || key.key === " ") { key.preventDefault(); openHistoryAnalysis(event); } });
-    row.append(fish, historyCell(formatTime(event.timestamp)), historyCell(aiFinalGrade(event), "grade-cell"), historyCell(scoreText(weightedFinalSupport(event))), historyCell(scoreText(model1Confidence(event))), historyCell(`${evidence.grade || "-"} ${scoreText(evidence.score)}`, "status-note"), historyCell(coverageText(event)), historyCell(readableVerdictStatus(verdictStatus(event)), needsReview(event) ? "review-status" : "status-note"), historyCell(reason.text || reason.code || "-", "status-note"), historyCell(manualGrade(event) || "-", manualGrade(event) ? "manual-grade" : "status-note"), historyCell(formatMs(event.processing_time_ms)));
+    row.append(fish, historyCell(formatTime(event.timestamp)), historyCell(aiFinalGrade(event), "grade-cell"), historyCell(scoreText(weightedFinalSupport(event))), historyCell(scoreText(model1Confidence(event))), historyCell(`${evidence.grade || "-"} ${scoreText(evidence.score)}`, "status-note"), historyCell(coverageText(event)), historyCell(readableVerdictStatus(verdictStatus(event)), needsReview(event) ? "review-status" : "status-note"), historyCell(reason.text || reason.label || "-", "status-note"), historyCell(manualGrade(event) || "-", manualGrade(event) ? "manual-grade" : "status-note"), historyCell(formatMs(event.processing_time_ms)));
     elements.historyBody.append(row);
   });
 }
@@ -658,7 +813,7 @@ function renderReviewRows(rows) {
   rows.forEach((event) => {
     const reason = verdictReason(event); const row = document.createElement("tr"); const fish = historyCell(event.fish_label || `Fish #${event.track_id}`); fish.classList.add("history-open"); fish.tabIndex = 0; fish.addEventListener("click", () => openHistoryAnalysis(event)); fish.addEventListener("keydown", (key) => { if (key.key === "Enter") openHistoryAnalysis(event); });
     const action = document.createElement("button"); action.type = "button"; action.className = "button quiet review-action"; action.textContent = "Review"; action.addEventListener("click", () => openHistoryAnalysis(event)); const actionCell = document.createElement("td"); actionCell.append(action);
-    row.append(fish, historyCell(formatTime(event.timestamp)), historyCell(aiFinalGrade(event), "grade-cell"), historyCell(scoreText(weightedFinalSupport(event))), historyCell(coverageText(event)), historyCell(reason.text || reason.code || "-", "status-note"), historyCell(manualGrade(event) || "-", manualGrade(event) ? "manual-grade" : "status-note"), actionCell); elements.reviewBody.append(row);
+    row.append(fish, historyCell(formatTime(event.timestamp)), historyCell(aiFinalGrade(event), "grade-cell"), historyCell(scoreText(weightedFinalSupport(event))), historyCell(coverageText(event)), historyCell(reason.text || reason.label || "-", "status-note"), historyCell(manualGrade(event) || "-", manualGrade(event) ? "manual-grade" : "status-note"), actionCell); elements.reviewBody.append(row);
   });
 }
 async function loadReviewQueue(resetPage = false) {
@@ -694,8 +849,18 @@ function renderUploadQuality(counters) { const grid = $("upload-quality-counter-
 ensureHistoryVerdictFilter();
 elements.viewAll.addEventListener("click", () => showView("history")); elements.historyFilter.addEventListener("click", () => loadHistory(true)); elements.historyPrev.addEventListener("click", () => { if (historyState.page > 1) { historyState.page -= 1; loadHistory(); } }); elements.historyNext.addEventListener("click", () => { if (historyState.page < historyState.totalPages) { historyState.page += 1; loadHistory(); } });
 elements.reviewPrev.addEventListener("click", () => { if (reviewState.page > 1) { reviewState.page -= 1; loadReviewQueue(); } }); elements.reviewNext.addEventListener("click", () => { if (reviewState.page < reviewState.totalPages) { reviewState.page += 1; loadReviewQueue(); } });
-elements.settingsButton.addEventListener("click", openSettings); elements.sidebarSettings.addEventListener("click", openSettings); elements.closeSettings.addEventListener("click", closeSettings); elements.openConfidence.addEventListener("click", openSettings); elements.scrim.addEventListener("click", () => { closeSettings(); closeExport(); });
+elements.settingsButton.addEventListener("click", openSettings); elements.sidebarSettings.addEventListener("click", openSettings); elements.closeSettings.addEventListener("click", closeSettings); elements.openConfidence.addEventListener("click", openSettings); elements.cameraSettingsButton.addEventListener("click", openCameraCalibration); elements.closeCameraCalibration.addEventListener("click", closeCameraCalibration); elements.scrim.addEventListener("click", () => { closeSettings(); closeCameraCalibration(); closeExport(); });
 elements.exportButton.addEventListener("click", openExport); elements.sidebarExport.addEventListener("click", openExport); elements.closeExport.addEventListener("click", closeExport); elements.cancelExport.addEventListener("click", closeExport);
+elements.calibrationMode.addEventListener("change", () => postCameraSettings({ calibration_mode: elements.calibrationMode.checked }));
+  elements.cameraReset.addEventListener("click", () => cameraRequest("/api/camera/reset")); elements.cameraLoadProfile.addEventListener("click", () => cameraRequest("/api/camera/profile/load")); elements.cameraSaveProfile.addEventListener("click", () => cameraRequest("/api/camera/profile/save", undefined, "Inspection profile saved. Record references and explicitly confirm when the physical setup is reviewed.")); elements.cameraLock.addEventListener("click", () => cameraRequest("/api/camera/lock", { locked: !Boolean(cameraCalibrationStatus?.locked) }));
+  elements.cameraRecordEmptyReference.addEventListener("click", () => cameraRequest("/api/camera/reference", { scene_type: "empty_conveyor" }, "Empty-conveyor reference recorded. Save the profile before confirmation."));
+  elements.cameraRecordFishReference.addEventListener("click", () => cameraRequest("/api/camera/reference", { scene_type: "representative_fish" }, "Representative-fish reference recorded for acquisition monitoring only."));
+  elements.cameraConfirmProfile.addEventListener("click", () => {
+    const installation = researchInstallationPayload();
+    const missing = Object.entries(installation).filter(([, value]) => !value).map(([key]) => key.replaceAll("_", " "));
+    if (missing.length) { setCameraCalibrationMessage(`Confirmation needs: ${missing.join(", ")}.`, true); return; }
+    cameraRequest("/api/camera/profile/confirm", { operator_confirmed: true, operator_name: elements.cameraOperatorName.value.trim() || null, installation }, "Calibration profile explicitly confirmed. Lock the camera before collecting study data.");
+  });
 elements.slider.addEventListener("input", () => setConfidence(elements.slider.value)); elements.slider.addEventListener("change", () => setConfidence(elements.slider.value, true)); elements.confidenceMinus.addEventListener("click", () => setConfidence(Number(elements.slider.value) - 1, true)); elements.confidencePlus.addEventListener("click", () => setConfidence(Number(elements.slider.value) + 1, true)); elements.resetConfidence.addEventListener("click", () => setConfidence(defaultConfidence * 100, true));
 elements.qualitySlider.addEventListener("input", () => setQualityConfidence(elements.qualitySlider.value)); elements.qualitySlider.addEventListener("change", () => setQualityConfidence(elements.qualitySlider.value, true)); elements.qualityConfidenceMinus.addEventListener("click", () => setQualityConfidence(Number(elements.qualitySlider.value) - 1, true)); elements.qualityConfidencePlus.addEventListener("click", () => setQualityConfidence(Number(elements.qualitySlider.value) + 1, true)); elements.resetQualityConfidence.addEventListener("click", () => setQualityConfidence(defaultQualityConfidence * 100, true));
 Object.entries(overlayControls).forEach(([name, controls]) => controls.forEach((control) => control.addEventListener("change", () => setOverlay(name, control.checked))));

@@ -1,10 +1,15 @@
 # Dried *Sardinella lemuru* Instance Segmentation and Quality Grading
 
-This repository implements a scientifically conservative computer-vision pipeline for
-grading individual dried tamban (*Sardinella lemuru*) as `Class A`, `Class B`,
-`Class C`, or `Rejected`. The primary vision task is **instance segmentation**, not
-whole-frame classification: one camera frame may contain several overlapping fish,
-partial fish, and more than one quality class.
+This repository contains the canonical local Tamban Fish Inspection System and its
+supporting research/provenance tools. The production runtime grades individual dried
+tamban (*Sardinella lemuru*) as `Class A`, `Class B`, `Class C`, `Rejected`, or
+`Ungraded`. It is deliberately conservative: a fish is not forced into a grade when
+the available Model 2 evidence is incomplete, ambiguous, or insufficient.
+
+The canonical runtime is the two-model application under `src/api/`,
+`src/inference/`, `src/evaluation/`, `configs/`, `frontend/`, and `tests/`. Dataset
+preparation, segmentation experiments, feature baselines, and retained legacy
+artifacts are research paths; they are not competing production inspection systems.
 
 The repository is deliberately fail-closed. Commands that could produce a misleading
 experiment stop when reviewed annotations, physical-specimen grouping, duplicate
@@ -57,15 +62,22 @@ The configured class IDs are:
 
 | ID | Label | Working visual definition |
 | --- | --- | --- |
-| 0 | Class A | Substantially complete, normal/slender morphology, relatively clean silver/gray surface, and low defect burden |
-| 1 | Class B | Substantially complete, with moderate discoloration, scale loss, scraping, roughness, small holes/tears, or local deformation |
-| 2 | Class C | Substantially complete with clearly broader/full middle-body morphology relative to length |
-| 3 | Rejected | Severe anatomical loss, major fragmentation, exposed skeleton/spine, or major structural discontinuity |
+| 0 | Class A | Expert-adjudicated, substantially complete reference appearance in the reviewed annotation rubric |
+| 1 | Class B | Expert-adjudicated intermediate appearance in the reviewed annotation rubric |
+| 2 | Class C | Expert-adjudicated broader/full middle-body morphology relative to length |
+| 3 | Rejected | Expert-adjudicated nonconforming appearance in the reviewed annotation rubric |
 
-These are working definitions, not self-validating biological ground truth. Domain
-experts must approve the rubric and adjudicate ambiguous B/C and B/Rejected cases.
-Yellow color or gloss alone is not sufficient to assign a grade. Truncation by the
-image boundary is not physical damage.
+These are research/annotation working definitions, not self-validating biological
+ground truth or a claim about the deployed checkpoints. Domain experts must approve
+the rubric and adjudicate ambiguous B/C and B/Rejected cases. Yellow color or gloss
+alone is not sufficient to assign a grade, and truncation by the image boundary is
+not physical damage.
+
+The deployed runtime checkpoints do **not** explicitly detect cracks, holes, tears,
+yellowing defects, deformation, physical missing anatomy, oil percentage, or moisture
+percentage. The live system must not cite those concepts as detector findings. HSV
+and brightness measurements are descriptive appearance proxies only unless a separate
+validated rule is introduced.
 
 See [the annotation and grading rules](dataset/ANNOTATION_GUIDELINES.md) and
 [the metadata schema](dataset/METADATA_SCHEMA.md) before labeling.
@@ -107,11 +119,12 @@ python -m pip install -r requirements.txt
 
 Run commands from this directory so configuration-relative paths resolve correctly.
 
-## Version 3 local two-model operator dashboard
+## Canonical local two-model inspection system
 
-The local dashboard adds an operator-facing path alongside the existing research
-and training commands. It does not replace the training or command-line inference
-pipeline.
+The operator dashboard is the one production/runtime path. It is intentionally
+separate from the repository's dataset, training, comparison, and retained legacy
+research utilities. Those utilities can preserve evidence and support future
+validation, but they must not be presented as alternative live inspection systems.
 
 ```text
 OpenCV webcam -> YOLO Model 1 (model1_fish_parent_detector.pt) -> Fish boxes + confidence
@@ -120,12 +133,11 @@ OpenCV webcam -> YOLO Model 1 (model1_fish_parent_detector.pt) -> Fish boxes + c
               -> Grade A/B/C/Rejected Head/Body/Tail evidence -> weighted grade
 ```
 
-The backend is deliberately the sole camera owner. It loads both supplied YOLO
-checkpoints once at startup, passes only Model 1 fish crops to Model 2, and uses
-ByteTrack IDs to avoid duplicate counts. No conveyor frame, API key, base64 image,
-or runtime request is sent to a remote inference service. FastAPI also serves the
-dependency-free responsive frontend, so no Node.js installation or separate
-frontend build is needed.
+The backend is the sole camera owner. It loads local checkpoints when available,
+keeps evidence keyed to persistent Model 1 Fish IDs, and serves the FastAPI frontend
+without a separate Node.js build. Normal runtime inference has no Roboflow, internet,
+or cloud-model dependency. A missing checkpoint is reported as unavailable rather
+than replaced with fabricated predictions.
 
 ### Supplied checkpoint layout and verified labels
 
@@ -148,23 +160,25 @@ classes.
 
 `FISH_DETECTION_CONFIDENCE` (default `0.50`) and
 `FISH_QUALITY_CONFIDENCE` (default `0.25`, matching the supplied checkpoint's
-saved operating point) are independent. The settings drawer
-changes both live inference thresholds. Use `FISH_DETECTOR_MODEL_PATH` and
+saved operating point) are independent. Display settings can change live, while
+detector and policy settings are locked during an active inspection so accumulated
+fish evidence cannot silently change meaning. Use `FISH_DETECTOR_MODEL_PATH` and
 `FISH_QUALITY_MODEL_PATH` to provide alternate local checkpoint locations.
 
 ### New dashboard structure
 
 ```text
-src/api/app.py       FastAPI routes, startup/shutdown, and MJPEG response
-src/api/camera.py    single camera/inference worker and lifecycle
-src/inference/yolo_fish_detector.py  Model 1 YOLO fish detection and ByteTrack bridge
-src/inference/yolo_quality_model.py  Model 2 YOLO crop-level part evidence adapter
-src/inference/grading_engine.py  explainable Head/Body/Tail weighted verdict and HSV measurements
-configs/grading_engine.yaml     active weights, evidence safeguards, and optional override switches
-src/inference/part_fusion.py    structural/association utilities retained for experimental paths
-src/api/domain.py    Fish-only tracks, crossing events, quality metadata, history, and counters
-frontend/            responsive HTML, CSS, and JavaScript dashboard
-tests/test_fish_detector.py      mocked RF-DETR unit tests and opt-in local smoke test
+src/api/                       FastAPI routes, camera lifecycle, durable SQLite history, export
+src/inference/yolo_fish_detector.py    Model 1 whole-fish detector and tracker bridge
+src/inference/yolo_quality_model.py    Model 2 12-class part/grade evidence adapter
+src/inference/grading_policy.py        pure deterministic fish-verdict policy
+src/inference/grading_engine.py        temporal evidence aggregation and policy adapter
+src/inference/association.py           conservative optional full-frame part association
+src/evaluation/fish_level_validation.py  offline replay through the shared policy
+src/evaluation/end_to_end_validation.py  labeled end-to-end detector/count/grade report
+configs/grading_engine.yaml             versioned operating policy and safeguards
+frontend/                       operator dashboard
+tests/                          model-free unit/integration coverage and opt-in smoke tests
 ```
 
 ### Install and run on Windows
@@ -176,19 +190,23 @@ py -m pip install -r requirements.txt
 py -m src.api
 ```
 
+`requirements.txt` is the canonical runtime/model-free-test dependency set.
+`requirements-legacy-research.txt` and `requirements-comparison.txt` are optional
+research-only extras; `requirements_actual.txt` is an environment inventory, not a
+deployable dependency specification.
+
 Then open `http://127.0.0.1:8000`. Click **Start Inspection** to open the camera
 and reset the in-memory session counters. Click **Stop Inspection** to stop the
 worker and release the camera. Closing the backend also releases it through the
 application shutdown hook. Interactive API documentation is available at
 `http://127.0.0.1:8000/docs`.
 
-### Legacy YOLO26 Part Preview
+### Retained research-only preview artifacts
 
-This compatibility-only mode displays raw predictions from the older 12-class
-YOLO26n-seg part model. It is not Model 2 in the normal two-model runtime. It uses
-the existing webcam and dashboard, but whole-fish ByteTrack identity,
-grading, inspection-line events, history, and counting are intentionally disabled.
-Head, Body, and Tail predictions are never counted as fish.
+The older YOLO26/part-preview path is retained temporarily as research provenance,
+not as an alternative production runtime. Its raw part boxes must not be used for
+official fish counts, final grades, defect claims, or thesis performance figures.
+They do not establish a persistent fish identity or a valid fish-level verdict.
 
 Place `exp-4.pt` at `models/yolov26/exp-4.pt`, or point
 `LEMURU_PART_WEIGHTS` to its repository-relative location. In PowerShell:
@@ -236,10 +254,12 @@ safe in-memory `crop_fish()` helper for a downstream consumer. Coordinates are
 clamped before a crop is returned; invalid or zero-area crops are rejected.
 
 Model 2 is the separate local **YOLO quality-part detector** (`last.pt`). It answers
-**which Grade A/B/C/Rejected Head, Body, and Tail detections are present?** The
-normal runtime runs it only on bounded in-memory Model 1 Fish crops, associates its
-evidence to the ByteTrack ID, and uses confidence-weighted temporal voting. It
-neither writes crops nor sends a frame, crop, API key, or request to Roboflow.
+only **which Grade A/B/C/Rejected Head, Body, and Tail detections are present?** It
+does not detect a crack, hole, tear, yellowing defect, deformation, or physical
+absence. The default `crop` mode runs Model 2 on one bounded in-memory Model 1 Fish
+crop and returns boxes in the original frame coordinate system. The optional
+`full_frame` mode must use conservative geometry-based association; ambiguous or
+unassigned parts remain unassigned rather than being forced onto a fish.
 
 ### Explainable final verdict
 
@@ -249,12 +269,12 @@ The normal runtime uses this exact flow for one persistent Model 1 ID:
 Model 1 Fish detection + ID
   -> bounded Fish crop
   -> Model 2 Head/Body/Tail grade boxes
-  -> optional conservative frame-quality gate + sharpness measurement
+  -> frame-quality/clipping measurements and conservative association checks
   -> strongest box for each (region, grade) in that frame
-  -> mean evidence over frames where that region was observed
-  -> Body/Head/Tail weighted score for every final grade
-  -> evidence coverage + minimum-evidence checks + final acceptance gate
-  -> automatic grade OR Ungraded / Needs Review, with HSV, history, and export
+  -> mean evidence over valid observations for that persistent Fish ID
+  -> fixed Body/Head/Tail weighted support for every final grade
+  -> coverage, region, temporal, support, and margin gates
+  -> A / B / C / Rejected, or explicit Ungraded with reason code(s)
 ```
 
 `configs/grading_engine.yaml` is the sole source of the active default part
@@ -262,61 +282,81 @@ weights: **Body 0.50, Head 0.30, Tail 0.20**. For each possible result the engin
 calculates, for example:
 
 ```text
-Class A = Body_A × 0.50 + Head_A × 0.30 + Tail_A × 0.20
+Class A = Body_A * 0.50 + Head_A * 0.30 + Tail_A * 0.20
 ```
 
-It calculates the same score for Class B, Class C, and Rejected; it never calls
-the largest Model 2 box the fish grade. Duplicate boxes in a frame are not added:
-the highest confidence box for each region/grade is retained. Across a live
-Model 1 ID, those per-frame values are mean-aggregated only over frames where the
-region was observed.
+The same fixed original weights apply to Class B, Class C, and Rejected. The system
+never calls the largest Model 2 box a fish grade. Duplicate boxes in a frame are not
+added: only the strongest detection for each `(region, grade)` is retained. Across
+one persistent Model 1 ID, valid observations are mean-aggregated without mixing
+evidence between tracks.
 
 Body evidence is required by default. An unobserved Head or Tail is **Unknown**,
-not physically missing; its original weight is removed and the remaining observed
-weights are renormalized. The result also retains original anatomical evidence
-coverage: Body-only is 50%, Body+Head is 80%, and all three parts are 100%.
-Renormalization therefore never makes Body-only evidence look like 100% coverage.
+not physically missing, and contributes zero support. Its original weight is never
+redistributed: Body-only coverage is 0.50, Body+Head is 0.80, Body+Tail is 0.70,
+and all three regions are 1.00. For example, Body `Class A` evidence of 0.82 with
+no reliable Head or Tail evidence produces `0.82 * 0.50 = 0.41` weighted support,
+not 0.82.
 
-The active `standard` configuration requires Body, at least one observed region,
-50% original coverage, and **50% final weighted support** before automatically
-assigning a class. `strict` mode reads its stronger region/coverage requirements
-from the same YAML file. The 50% value is an adjustable operating rule, not a
-scientific calibration claim. A low score (for example, Body `Grade_C_Body` at
-41.81%) becomes **Ungraded / Needs Review**, not Rejected. Each record carries a
-structured status and reason code such as `LOW_FINAL_SUPPORT`,
-`INSUFFICIENT_REGION_COVERAGE`, `BODY_NOT_OBSERVED`, or
-`UNSTABLE_TEMPORAL_EVIDENCE`.
+The `standard` and `strict` policies are configuration-driven. The initial
+thesis-safe strict policy requires reliable Body, Head, and Tail evidence, three
+observed regions, and 1.00 original-weight coverage. A policy may relax those values
+only through an explicit validation experiment; it must not silently weaken strict
+mode. The baseline `final_verdict_threshold` of 0.50 is a provisional,
+validation-selected operating setting, not a scientifically proven optimum.
 
-Live evidence stores count/mean/min/max/standard-deviation/detection-frequency
-statistics for every region/grade. A valid crop's Laplacian-variance sharpness is
-measured for diagnostics and best-frame selection; filtering is inactive unless
-explicit thresholds are enabled in `configs/grading_engine.yaml`. One candidate
-metadata record is retained per track. Optional crop storage saves only that best
-crop at finalization, never every frame.
+Before emitting a final class, the policy checks parent/association reliability,
+observed regions, original-weight coverage, temporal observations, top weighted
+support, and the configured top-vs-second `minimum_grade_margin`. A fish that fails
+any gate becomes `Ungraded`, not Rejected. Structured reasons include
+`UG_PARENT_UNCERTAIN`, `UG_ASSOCIATION_AMBIGUOUS`,
+`UG_MISSING_PART_EVIDENCE`, `UG_OUT_OF_FRAME`,
+`UG_INSUFFICIENT_COVERAGE`, `UG_INSUFFICIENT_REGIONS`,
+`UG_TEMPORAL_EVIDENCE`, `UG_LOW_GRADE_SUPPORT`, `UG_LOW_MARGIN`,
+`UG_FRAME_QUALITY`, and `UG_MODEL2_UNAVAILABLE`. Successful automatic grades use
+`GR_CONFIDENT`; a Rejected result based on its trained Model 2 label uses
+`RJ_GRADE_EVIDENCE`.
 
-The supplied checkpoints have no trained crack, yellowing, fatty, deformation, or
-missing-part class. Their trained `Rejected_*` labels participate in the regular
-weighted score. No rejection override is active by default; an override requires
-an explicitly configured and validated `rejected_override_threshold`.
+Live evidence stores observation count, frames used, per-region/grade means, and
+stability statistics for every persistent Fish ID. Frame quality records crop width,
+height, area, clipping, sharpness, and Model 1 confidence. In the absence of a
+validated configured threshold, these are measurements and diagnostics—not an
+arbitrary rejection rule. Representative best-frame selection supports review and
+optional archival metadata; it never replaces temporal grading.
+
+Part visibility is reported conservatively as `PRESENT`, `NOT_DETECTED`,
+`PARENT_FRAME_CLIPPED`, `PARENT_CROP_CLIPPED`, or `UNKNOWN`. The system does not
+infer a physically missing head, body, or tail from a nondetection. A crop or parent
+that touches a frame boundary can instead produce `UG_OUT_OF_FRAME` when the policy
+requires the unavailable region.
+
+The supplied checkpoints have no trained crack, hole, tear, yellowing-defect,
+fatty-fish, deformation, or missing-part class. Their trained `Rejected_*` labels
+participate in the regular fixed-weight score alongside A/B/C. No rejection override
+is active by default; an override requires an explicitly configured and validated
+`rejected_override_threshold`. `RJ_CONFIRMED_DEFECT` must not be emitted unless a
+separate validated defect detector or rule exists.
 
 The engine measures HSV colour statistics on the actual Model 1 crop ROI and each
 actual Model 2 part-box ROI: mean hue, mean saturation/value, and yellow/brown/dark
 measurement proxies. Both checkpoints are detection-only, so the measurement is
 explicitly tagged as a rectangular ROI rather than a segmentation mask. The
 existing project proxy settings are reused, but no colour metric alters a grade
-without a validated configured rule. The UI's **View full analysis** reveals the
-Model 1 detector confidence, Model 2 evidence support (not a calibrated
-probability), original coverage, effective weights, every part contribution and
-temporal statistic, all four scores, HSV, best frame, adjustment state, and any
-override reason. A fish ID in History opens the same record. The **Review Queue**
-keeps uncertain AI results separate from real Rejected fish; an operator can record
-A/B/C/Rejected as a manual grade without overwriting the original AI verdict.
+without a validated configured rule. The UI and exports call the weighted result
+**Grade Support** or **Final Support**, not a probability. They retain Model 1 and
+Model 2 raw detector confidence separately, original coverage, fixed original
+weights, every part contribution and temporal statistic, all four scores, HSV, best
+frame, adjustment state, and any override reason. The Review Queue keeps uncertain
+AI results separate from trained-label Rejected results; a manual review can be
+recorded without overwriting the original AI verdict.
 
-CSV and Excel exports include numeric weighted supports, evidence coverage,
-per-part temporal statistics, HSV, manual review fields, best-frame metadata,
-model/config versions, shortened startup hashes, and thresholds. Excel contains
-**Fish Inspections**, **Session Summary**, **Feature Summary**,
-**Grade Calculation Rules**, and **Review Queue** sheets.
+Completed inspection events are persisted in SQLite with a session/configuration
+snapshot. History, analytics, CSV, and XLSX read durable records rather than only
+the current process memory. Exports include fish and session IDs, final and second
+support, margin, coverage, reason codes, raw detector thresholds, fixed weights,
+per-grade contributions, temporal counts, tracker backend, camera/session settings,
+appearance proxies, processing time, and reproducibility metadata. They do not
+invent unsupported defect labels.
 
 ### Runtime image preprocessing
 
@@ -328,10 +368,12 @@ preprocessing helper when a decoder supplies them; malformed, empty, non-finite,
 or unsupported-channel images receive a typed error before model inference.
 
 Both supplied YOLO checkpoints receive a validated in-memory BGR NumPy image via
-their native Ultralytics preprocessing path. Model 2 receives only the bounded
-Model 1 crop using floor/ceil crop bounds plus `FISH_QUALITY_ROI_PADDING`; its
-actual Head/Body/Tail boxes are translated back through those bounds for rendering.
-There is no RGB double-normalization, disk crop, or invented mask conversion.
+their native Ultralytics preprocessing path. Crop mode gives Model 2 one bounded
+Model 1 crop using floor/ceil bounds plus the configured, bounded
+`FISH_QUALITY_ROI_PADDING`; part boxes are translated back for rendering. There is
+no RGB double-normalization, disk crop, invented mask conversion, or silent CLAHE,
+gamma, white-balance, saturation, or contrast correction. Any future transform must
+be explicit, deterministic, configurable, and recorded in session metadata.
 
 `YoloFishDetector.diagnostics()` and `YoloQualityModel.diagnostics()` report the
 latest model-call times without logging image data.
@@ -344,7 +386,12 @@ The API endpoints are:
 | `POST` | `/api/inspection/start` | Start one camera/inference worker |
 | `POST` | `/api/inspection/stop` | Stop the worker and release the camera |
 | `POST` | `/api/session/reset` | Reset active tracks, completed events, and counters |
-| `GET` | `/api/history` | Latest and recent completed inspection events |
+| `GET` | `/api/camera/settings` | Camera capabilities, requested values, and actual readbacks |
+| `POST` | `/api/camera/settings` | Apply supported camera settings during calibration |
+| `GET` | `/api/history` | Durable completed inspection records with range/session filters |
+| `GET` | `/api/sessions` | Durable inspection-session snapshots |
+| `GET` | `/api/analytics` | Session-aware operational analytics |
+| `POST` | `/api/export` | CSV/XLSX export from durable records |
 | `GET` | `/api/video-feed` | Annotated MJPEG stream |
 | `POST` | `/api/analyze-image` | In-memory local analysis of one `.jpg`, `.jpeg`, `.png`, or `.webp` upload |
 
@@ -376,6 +423,12 @@ $env:LEMURU_CAMERA_INDEX = "1"
 py -m src.api
 ```
 
+The Camera settings panel and `/api/camera/settings` report only controls that the
+current OpenCV/UVC backend can probe. A requested setting is applied, read back, and
+recorded as the accepted value; unsupported controls do not become fake sliders or
+crash the service. Camera acquisition changes belong to a stopped/calibration state,
+and accepted settings are captured with the inspection session.
+
 Model 1 is the local YOLO whole-fish detector. It is not a grader: it provides
 one semantic `Fish` detection for Model 1 track creation, even though its stored
 checkpoint label is `item`. The deployed default is
@@ -395,6 +448,7 @@ $env:FISH_QUALITY_CONFIDENCE = "0.25"
 $env:FISH_QUALITY_DEVICE = "auto" # CUDA when available, otherwise CPU
 $env:FISH_QUALITY_INTERVAL = "3" # reuse a tracked fish's result between quality observations
 $env:FISH_QUALITY_ROI_PADDING = "0"
+$env:FISH_QUALITY_INFERENCE_MODE = "crop" # or conservative full_frame experiment
 py -m src.api
 ```
 
@@ -402,20 +456,34 @@ The dashboard remains online with actionable Model 1 or Model 2 errors. Model 1
 failure stops automatic fish inspection; Model 2 failure leaves Model 1 tracking
 and counting available while fish remain honestly `Ungraded`.
 
+These values have distinct meanings:
+
+- `FISH_DETECTION_CONFIDENCE` is the Model 1 detector's raw acceptance threshold.
+- `FISH_QUALITY_CONFIDENCE` is the Model 2 detector's raw acceptance threshold.
+- `minimum_part_confidence` is the policy threshold for reliable part evidence.
+- `final_verdict_threshold` is the fish-level weighted-support gate.
+- `minimum_grade_margin` is the separation required between the top two grades.
+
+Policy-affecting settings must not change partway through a fish's accumulated
+evidence. Stop or reset inspection before changing them; the resulting session must
+retain its own policy/configuration snapshot rather than rewriting older events.
+
 ### Tracking and event counting
 
-The ByteTrack bridge assigns each Model 1 YOLO Fish box a persistent
-numeric ID. The domain layer maintains each ID's current/previous center, box,
-timestamps, Fish detection confidence history, and counted state. An unseen track
-expires after the configured timeout and never creates an event if it did not cross
-the line. Model 1 never emits an accepted/rejected decision or a quality class.
+The Model 1 tracker assigns each whole-fish box a persistent numeric ID. The domain
+layer maintains each ID's current/previous center, box, timestamps, detector
+confidence history, and counted state. The session records whether the active
+backend is ByteTrack or the IoU fallback; it does not present the fallback as
+equivalent. An unseen track expires after the configured timeout and never creates
+an event if it did not cross the line. Model 1 never emits an accepted/rejected
+decision or a quality class.
 
 At a valid crossing, the event is recorded as `Fish` / `COUNTED`; its detector
-confidence remains the mean Model 1 Fish confidence for that track. Where Model 2
-has a result, the event additionally carries the latest weighted grade, complete
-part calculation, HSV measurements, and compact raw part metadata. Quality totals
-remain separate from the unique Fish total; ungraded fish are reported honestly
-instead of forced into a category.
+confidence remains the Model 1 confidence evidence for that track. Where Model 2
+has a result, the event also carries the complete support calculation, reason codes,
+HSV proxies, and compact raw part metadata. The invariant
+`A + B + C + Rejected + Ungraded == total counted fish` is maintained even when a
+late quality update moves one already-counted fish between quality buckets.
 
 The default is a vertical line at 65% of frame width with left-to-right motion. A
 crossing requires the previous center to be before the line and the new center to
@@ -424,12 +492,11 @@ flag, so several fish can cross together without a global cooldown and a complet
 track cannot count again while it remains visible.
 
 Counters represent **completed fish-count events**, never raw frames or merely
-visible tracks. The newest event appears in the dashboard and up to 25 newest-first
-events appear in the in-memory history. **Reset Session** clears
-counters, history, latest event, all active domain tracks, and the underlying
-tracker when its installed Ultralytics version exposes reset support. The next
-observation establishes a fresh movement baseline, preventing an immediate stale
-crossing after reset. Reset does not reload the model or stop the camera.
+visible tracks. The live dashboard keeps a compact in-memory view for responsiveness,
+while completed events and session metadata are durable SQLite records. **Reset
+Session** clears active state and starts a new session/policy context; it does not
+rewrite previously persisted events. The next observation establishes a fresh
+movement baseline, preventing an immediate stale crossing after reset.
 
 ### Tracking configuration
 
@@ -469,69 +536,139 @@ py -m src.api
 The live result panel follows the newest active Fish ID immediately. It no
 longer waits for a conveyor-line crossing before showing Model 2 evidence.
 
-### Detector, grading, and dashboard tests
+### Model-free tests
 
-The mocked two-model adapters, frame validation, BGR-to-RGB conversion, normalized
-Fish output, confidence filtering, box clamping/cropping, checkpoint resolution,
-weighted Head/Body/Tail calculations, HSV measurement provenance, track lifecycle,
-simultaneous crossing, direction, one-event-only, history, reset, repeated Start,
-and idempotent Stop tests do not need a webcam, GPU, FastAPI server, or model file:
+The normal test suite uses mocks/fakes and does not require a webcam, GPU, network,
+Roboflow credential, or real checkpoint. It covers deterministic grading-policy
+behavior, runtime/offline parity, tracking/counting invariants, image boundaries,
+camera-control mocks, persistence, durable exports, and research-data utilities.
 
 ```powershell
-py -m unittest discover -s tests -p "test_fish_detector.py" -v
-py -m unittest discover -s tests -p "test_fish_segmenter.py" -v
-py -m unittest discover -s tests -p "test_upload_analysis.py" -v
-py -m unittest discover -s tests -p "test_operator_dashboard.py" -v
-py -m unittest discover -s tests -p "test_grading_engine.py" -v
-py -m unittest discover -s tests -p "test_verdict_acceptance.py" -v
-py -m unittest discover -s tests -p "test_frame_quality.py" -v
-py -m unittest discover -s tests -p "test_fish_level_validation.py" -v
+py -m unittest discover -s tests -v
 ```
 
-For offline **whole-fish** validation, provide a JSON/JSONL/CSV record for each
-fish with a ground-truth grade and the system final verdict. The tool reports the
-A/B/C/Rejected confusion matrix, precision/recall/F1, automatic-grading coverage,
-review rate, accuracy conditional on automatic grades, and end-to-end accuracy
-including review outcomes separately. It can also replay several saved
-weight/threshold configurations from recorded part evidence without retraining or
-automatically choosing a configuration:
+The GitHub Actions workflow runs this model-free command. Real camera and model
+smoke tests remain opt-in through their documented environment variables and are not
+part of ordinary CI.
+
+For offline **whole-fish** validation, provide a JSON/JSONL/CSV record with a
+ground-truth grade and stored regional evidence. Offline replay invokes the same
+pure fish-verdict policy as live inference; it does not maintain a second grading
+formula. The report includes the A/B/C/Rejected confusion matrix, per-class
+precision/recall/F1, Ungraded/reason-code counts, selective coverage, selective
+accuracy, accuracy including abstention, evidence coverage, and B-vs-C confusion.
+It can replay saved policy configurations without retraining or automatically
+choosing a configuration:
 
 ```powershell
 py -m src.evaluation.fish_level_validation --records results\fish_level_records.json --output results\fish_level_report.json --dataset-split validation
 ```
 
 Use validation data to select an operating rule, then run a locked held-out test
-report once. Model evidence support is retained for future calibration analysis but
-is not called a calibrated probability.
+report once. Never select a "winning" policy from the final test set. Model evidence
+support is retained for calibration analysis but is not called a calibrated
+probability.
 
-To run the real-model smoke test after placing a trusted checkpoint and choosing a
-fish image, opt in explicitly:
+For a single labeled end-to-end report spanning parent detection, Model 2 evidence,
+counting, and final fish verdicts, provide a manifest with labeled parent and Model 2
+metrics, per-fish count records, and fish-level grading records. The command validates
+the manifest rather than treating Model 2 predictions as truth:
 
 ```powershell
-$env:FISH_DETECTOR_MODEL_PATH = "models\fish_detector\weights\my-fish-2xlarge.pth"
-$env:FISH_DETECTOR_SMOKE_IMAGE = "dataset\path\to\fish-image.jpg"
-py -m unittest discover -s tests -p "test_fish_detector.py" -v
+py -m src.evaluation.end_to_end_validation --manifest results\end_to_end_manifest.json --output results\end_to_end_report.json
 ```
 
-The smoke test requires at least one Fish detection and verifies its class name,
-confidence, and image-bounded box. It is skipped during ordinary tests when either
-the image setting or local checkpoint is absent.
+`model2_metrics` may directly contain the labeled `overall` and `per_class`
+payload from `evaluate_yolo_parts.py`; box and mask P/R/AP measurements are retained
+per source class, and any F1 derived from reported precision/recall is labeled as
+such. This assembler does not create AP, ground truth, or an accuracy claim from live
+inspection events.
 
-Use `FISH_SEGMENTER_SMOKE_IMAGE` with `FISH_SEGMENTER_MODEL_PATH` to opt into the
-Model 2 smoke test. Setting both smoke image variables enables the sequential
-Model 1 -> crop -> Model 2 smoke test. All three skip when their local checkpoint
-or input is absent. The dashboard stays online and reports an actionable model
-error if PyTorch, the configured device, or a checkpoint cannot be loaded.
+## Independent conveyor-study workflow
 
-Version 3 is intended for a single local operator. History is volatile and it has
-no authentication, database, physical conveyor synchronization, actuator control,
+The research-only workflow in `src.evaluation` keeps future study evidence out of
+the production camera → detection → tracking → grading path. It does not tune a
+threshold, load a checkpoint, or change a grade.
+
+Audit every proposed study manifest against the deployed checkpoint's training
+lineage before calling it independent. The optional near-duplicate scan is a
+review aid only and needs resolvable image paths; it never moves or deletes data.
+
+```powershell
+python -m src.evaluation.dataset_independence `
+  --manifest datasets\future_study_manifest.csv `
+  --model-training-manifest training_manifest.csv `
+  --near-duplicates `
+  --output results\future_study\dataset_independence_audit.json `
+  --proposed-split-manifest results\future_study\proposed_group_aware_split.csv
+```
+
+The proposed CSV is review-only. It keeps connected source, augmentation, hash,
+and session relationships in one split; it never replaces a live dataset. Reserve
+future files under `datasets/development/`, `datasets/validation_independent/`, and
+`datasets/test_locked/` rather than copying derivatives across those boundaries.
+
+Before collection, complete the camera procedure in `camera/README.md`. Then create
+a JSON input for `create-session` that includes the dataset manifest, both checkpoint
+paths/hashes, the saved camera profile, and the frozen configuration fields
+`grading_policy_version`, `thresholds`, `weights`, `model2_interval`, `roi_padding`,
+and `processing_resolution`. An incomplete input produces a **DRAFT**, not a locked
+study. If Git reports uncommitted changes, the input must explicitly set
+`allow_dirty_worktree: true` to record the operator's decision to continue.
+
+```powershell
+python -m src.evaluation.validation_study create-session `
+  --input results\future_study\session_input.json `
+  --output results\future_study\validation_manifest.json
+
+python -m src.evaluation.validation_study verify-session `
+  --manifest results\future_study\validation_manifest.json `
+  --output results\future_study\session_verification.json
+```
+
+Use `model1-summary`, `association`, and `tracking` only with independently
+reviewed ground truth. Build whole-fish records with separately entered, explicitly
+blind ground truth; each record carries the locked camera, model, and configuration
+provenance. The aggregate report generator accepts only supplied research results:
+
+```powershell
+python -m src.evaluation.validation_study study-summary `
+  --input results\future_study\study_summary_input.json `
+  --output results\future_study\study_summary.json
+```
+
+Its labels are `COMPATIBILITY TEST`, `DEVELOPMENT VALIDATION`, `INDEPENDENT
+VALIDATION`, and `LOCKED TEST`. The last two are automatically downgraded to
+compatibility wording unless the matching dataset-independence audit gate passes
+(and a valid locked session is supplied). Ungraded outcomes remain in the stated
+denominator and are reported separately rather than silently excluded.
+
+Generate a read-only current checklist by passing the native audit JSON directly:
+
+```powershell
+python -m src.evaluation.validation_study readiness `
+  --input results\stabilization\validation_readiness_input.json `
+  --dataset-audit results\stabilization\dataset_independence_audit.json `
+  --output results\stabilization\validation_readiness.json
+```
+
+Real camera and checkpoint checks are deliberately opt-in local smoke work, not
+ordinary CI. Start the canonical dashboard with trusted local YOLO checkpoints and
+confirm its `/api/status` model diagnostics before using camera data. A missing
+checkpoint leaves the relevant model unavailable and produces explicit abstentions;
+it never falls back to fabricated detections. Retained RF-DETR smoke tests belong to
+the optional legacy-research dependency group and are not evidence for the canonical
+YOLO runtime.
+
+Version 3 is intended for a single local operator. Completed history is durable in
+SQLite, but there is no authentication, remote synchronization, actuator control,
 or WebSocket transport. ByteTrack can change IDs after long occlusion or severe
 overlap; abrupt motion between frames can also skip or falsely cross a narrow line.
 Before production use, validate tracker thresholds, line position, camera angle,
 conveyor direction, and minimum detection confidence with labeled conveyor video.
-A recommended Version 3 step is a replay/evaluation harness that measures ID
-switches, missed crossings, double counts, and final grading accuracy against
-manually annotated conveyor sequences.
+There is not yet a locked independent end-to-end test using unseen physical fish and
+independent acquisition sessions; this repository does not claim final thesis
+accuracy.
 
 ## 1. Audit the raw dataset
 
@@ -867,9 +1004,9 @@ new work.
 
 ## Project scope
 
-The intended deployment is laptop-based inference from a fixed camera. This phase
-does not include an ESP32-CAM, cloud service, database, servo, motor controller, or
-automatic sorting hardware. A real production decision should add calibrated
+The intended deployment is laptop-based inference from a fixed camera with local
+SQLite persistence. This phase does not include an ESP32-CAM, cloud service, servo,
+motor controller, or automatic sorting hardware. A real production decision should add calibrated
 confidence/rejection behavior, distribution-shift monitoring, and human review for
 uncertain or out-of-scope instances.
 

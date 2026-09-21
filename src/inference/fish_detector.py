@@ -1,4 +1,4 @@
-"""Local RF-DETR 2XLarge whole-fish detection for the conveyor runtime.
+"""Retained RF-DETR research adapter, not the canonical conveyor runtime.
 
 This module deliberately has no Roboflow API client, API key, or network
 fallback.  The RF-DETR package is imported only when a local checkpoint is

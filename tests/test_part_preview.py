@@ -13,7 +13,7 @@ import numpy as np
 from src.api.camera import CameraInspectionService
 from src.api.domain import Detection, InspectionState
 from src.api.runtime import PART_PREVIEW_MODE, WHOLE_FISH_MODE, resolve_part_weights_path, resolve_runtime_mode
-from src.inference.part_fusion import PartDetection
+from src.inference.part_types import PartDetection
 from src.inference.part_model import YoloPartModel, validate_part_class_mapping
 from src.preprocessing.audit_v7_exports import SOURCE_CLASSES
 
