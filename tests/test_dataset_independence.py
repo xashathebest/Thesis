@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import hashlib
 import io
 import json
 import tempfile
@@ -16,6 +17,7 @@ from src.evaluation.dataset_independence import (
     DatasetIndependenceError,
     audit_dataset_independence,
     main,
+    normalize_records,
     propose_group_aware_split_manifest,
     render_human_report,
 )
@@ -93,6 +95,91 @@ class DatasetIndependenceTests(unittest.TestCase):
         self.assertEqual(report["counts"]["model_training_samples"], 1)
         self.assertEqual(report["independence"]["validation"]["status"], "FAIL")
 
+    def test_missing_model_training_lineage_blocks_an_otherwise_clean_pass(self) -> None:
+        report = audit_dataset_independence(
+            [
+                row("study-train", "train", "study-train-group"),
+                row("study-val", "validation", "future-fish"),
+                row("study-test", "test", "locked-fish"),
+            ]
+        )
+
+        self.assertEqual(report["inputs"]["model_training_lineage_status"], "MISSING")
+        self.assertEqual(report["independence"]["validation"]["status"], "BLOCKED")
+        self.assertEqual(report["independence"]["test"]["status"], "BLOCKED")
+        self.assertEqual(report["FINAL_PERFORMANCE_CERTIFICATION"], "BLOCKED")
+        self.assertTrue(
+            any(
+                "Model-training lineage was not supplied." in reason
+                for reason in report["independence"]["validation"]["reasons"]
+            )
+        )
+
+    def test_pre_normalized_lineage_records_are_forced_to_train(self) -> None:
+        study = [
+            row("study-train", "train", "study-train-group"),
+            row("study-val", "validation", "future-fish"),
+            row("study-test", "test", "locked-fish"),
+        ]
+        historical_lineage = normalize_records(
+            [row("checkpoint-exposure", "validation", "future-fish")],
+            source_name="historical_export",
+        )
+        report = audit_dataset_independence(study, model_training_records=historical_lineage)
+
+        self.assertEqual(report["inputs"]["model_training_lineage_status"], "PROVIDED")
+        self.assertEqual(report["counts"]["samples_by_split"]["train"], 2)
+        self.assertEqual(report["independence"]["validation"]["status"], "FAIL")
+
+    def test_accessible_exact_duplicate_files_are_detected_without_manifest_hashes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            images = root / "images"
+            images.mkdir()
+            (images / "train.png").write_bytes(b"same bytes")
+            (images / "val.png").write_bytes(b"same bytes")
+            (images / "test.png").write_bytes(b"different test bytes")
+            (images / "checkpoint.png").write_bytes(b"different checkpoint bytes")
+            prepared_study_records = normalize_records(
+                [
+                    row("train", "train", "source-train"),
+                    row("val", "validation", "source-validation"),
+                    row("test", "test", "source-test"),
+                ],
+                source_name="prepared_study",
+            )
+            report = audit_dataset_independence(
+                prepared_study_records,
+                model_training_records=[row("checkpoint", "train", "checkpoint-source")],
+                image_root=root,
+            )
+
+        exact_scan = report["duplicates"]["exact_file_hash_scan"]
+        exact_matches = report["duplicates"]["identical_file_contents_across_splits"]
+        self.assertEqual(exact_scan["status"], "COMPLETE")
+        self.assertEqual(exact_scan["fingerprinted_samples"], 4)
+        self.assertEqual(len(exact_matches), 1)
+        self.assertEqual(report["independence"]["validation"]["status"], "FAIL")
+
+    def test_path_like_source_group_ids_do_not_collapse_to_their_basenames(self) -> None:
+        def source_group_only(sample_id: str, split: str, source_group: str) -> dict[str, object]:
+            payload = row(sample_id, split, source_group)
+            payload.pop("original_source")
+            return payload
+
+        report = audit_dataset_independence(
+            [
+                source_group_only("train", "train", "session-a/fish-001"),
+                source_group_only("val", "validation", "session-b/fish-001"),
+                source_group_only("test", "test", "session-c/fish-002"),
+            ],
+            model_training_records=[source_group_only("checkpoint", "train", "legacy/fish-003")],
+        )
+
+        self.assertEqual(report["cross_split_overlap"]["train_validation"]["group_count"], 0)
+        self.assertEqual(report["independence"]["validation"]["status"], "PASS")
+        self.assertEqual(report["independence"]["test"]["status"], "PASS")
+
     def test_optional_near_duplicate_scan_blocks_pending_review(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -140,6 +227,21 @@ class DatasetIndependenceTests(unittest.TestCase):
             "class_information", "split", "original_source",
         })
 
+    def test_group_aware_proposal_is_stable_when_input_rows_are_reordered(self) -> None:
+        records = [
+            row("a", "train", "source-a"),
+            row("b", "validation", "source-b"),
+            row("c", "test", "source-c"),
+            row("d", "train", "source-d"),
+            row("e", "validation", "source-e"),
+            row("f", "test", "source-f"),
+        ]
+
+        first = propose_group_aware_split_manifest(records, seed=19)
+        reordered = propose_group_aware_split_manifest(list(reversed(records)), seed=19)
+
+        self.assertEqual(first, reordered)
+
     def test_proposal_refuses_missing_provenance(self) -> None:
         with self.assertRaises(DatasetIndependenceError):
             propose_group_aware_split_manifest(
@@ -179,7 +281,15 @@ class DatasetIndependenceTests(unittest.TestCase):
             self.assertTrue(output.with_suffix(".txt").is_file())
             self.assertTrue(proposal.is_file())
             payload = json.loads(output.read_text(encoding="utf-8"))
-            self.assertEqual(payload["FINAL_PERFORMANCE_CERTIFICATION"], "PASS")
+            self.assertEqual(payload["FINAL_PERFORMANCE_CERTIFICATION"], "BLOCKED")
+            self.assertEqual(payload["inputs"]["model_training_lineage_status"], "MISSING")
+            expected_manifest_hash = hashlib.sha256(manifest.read_bytes()).hexdigest()
+            self.assertEqual(payload["inputs"]["study_manifest_sha256"], expected_manifest_hash)
+            self.assertEqual(
+                payload["evidence_binding"]["audited_study_artifact_sha256"],
+                expected_manifest_hash,
+            )
+            self.assertEqual(payload["evidence_binding"]["audited_study_artifact_kind"], "manifest_file")
 
 
 if __name__ == "__main__":

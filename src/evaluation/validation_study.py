@@ -68,6 +68,25 @@ STUDY_REPORT_CLASSES = (
     "LOCKED_TEST",
 )
 
+
+def _normalize_study_report_class(value: object, *, field: str) -> str:
+    """Return a canonical report-class label without inferring study scope."""
+
+    requested = _require_text(value, field=field).upper().replace("-", "_").replace(" ", "_")
+    if requested not in STUDY_REPORT_CLASSES:
+        raise ValidationStudyError(f"{field} must be one of: " + ", ".join(STUDY_REPORT_CLASSES) + ".")
+    return requested
+
+
+def _required_audit_gate_for_report_class(report_class: str) -> str | None:
+    """Return the only independence gate that supports a report-class claim."""
+
+    if report_class == "INDEPENDENT_VALIDATION":
+        return "validation"
+    if report_class == "LOCKED_TEST":
+        return "test"
+    return None
+
 # A formal session must preserve these values, even though the concrete names
 # of unrelated application settings are intentionally left extensible.  The
 # aliases accept the established runtime vocabulary without guessing values.
@@ -658,9 +677,12 @@ def _study_record_context(session_manifest: Mapping[str, object]) -> dict[str, o
     """Extract immutable per-fish provenance from a locked study manifest."""
 
     source = _require_mapping(session_manifest, field="session_manifest")
-    study = _require_mapping(source.get("study"), field="session_manifest.study")
-    if study.get("session_locked") is not True or study.get("formal_ready") is not True:
-        raise ValidationStudyError("A per-fish study record requires a formal locked validation session manifest.")
+    internal_validation = _internal_formal_session_validation(source)
+    if not internal_validation["valid"]:
+        details = "; ".join(str(item) for item in internal_validation["errors"])
+        raise ValidationStudyError(
+            "A per-fish study record requires an internally valid formal locked validation session manifest. " + details
+        )
     camera = _require_mapping(source.get("camera"), field="session_manifest.camera")
     models = _require_mapping(source.get("models"), field="session_manifest.models")
     configuration = _require_mapping(source.get("configuration"), field="session_manifest.configuration")
@@ -677,6 +699,39 @@ def _study_record_context(session_manifest: Mapping[str, object]) -> dict[str, o
         },
         "configuration_version": _hash_or_none(configuration.get("sha256"), field="session_manifest.configuration.sha256"),
     }
+
+
+def _reason_code_values(value: object) -> list[str]:
+    """Copy recorded runtime codes without interpreting or remapping them."""
+
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        values: Iterable[object] = (value,)
+    elif isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray, Mapping)):
+        values = value
+    else:
+        values = (value,)
+    return list(dict.fromkeys(str(item).strip() for item in values if str(item).strip()))
+
+
+def _recorded_runtime_reason_codes(prediction: Mapping[str, object]) -> list[str]:
+    """Collect production Ungraded/Needs Review reasons from their real paths."""
+
+    containers: list[Mapping[str, object]] = [prediction]
+    for outer in (prediction.get("analysis"), prediction.get("production_result")):
+        if isinstance(outer, Mapping):
+            containers.append(outer)
+            nested = outer.get("analysis")
+            if isinstance(nested, Mapping):
+                containers.append(nested)
+    result: list[str] = []
+    for container in containers:
+        for key in ("reason_codes", "ungraded_reason", "verdict_reason_code"):
+            for code in _reason_code_values(container.get(key)):
+                if code not in result:
+                    result.append(code)
+    return result
 
 
 def build_study_record(
@@ -705,7 +760,8 @@ def build_study_record(
     analysis = prediction.get("analysis") if isinstance(prediction.get("analysis"), Mapping) else {}
     part_results = analysis.get("part_results") if isinstance(analysis, Mapping) and isinstance(analysis.get("part_results"), Mapping) else {}
     system_grade = prediction.get("final_grade", prediction.get("system_grade", prediction.get("quality")))
-    ungraded_reason = prediction.get("reason_codes", prediction.get("ungraded_reason"))
+    original_ungraded_reason = prediction.get("reason_codes", prediction.get("ungraded_reason"))
+    runtime_reason_codes = _recorded_runtime_reason_codes(prediction)
     return {
         "study_sample_id": sample_id,
         "session_id": _require_text(session_id, field="session_id"),
@@ -717,7 +773,14 @@ def build_study_record(
         "ground_truth_source": normalized_truth["ground_truth_source"],
         "system_grade": _optional_text(system_grade),
         "final_grade": _optional_text(system_grade),
-        "ungraded_reason": copy.deepcopy(ungraded_reason),
+        # Preserve the production reason vocabulary verbatim.  These codes are
+        # evidence about an Ungraded / Needs Review outcome, not a research
+        # layer that is allowed to infer or replace a production grade.
+        "ungraded_reason": copy.deepcopy(original_ungraded_reason)
+        if original_ungraded_reason is not None
+        else copy.deepcopy(runtime_reason_codes),
+        "runtime_reason_codes": copy.deepcopy(runtime_reason_codes),
+        "reason_codes": copy.deepcopy(runtime_reason_codes),
         "body_evidence": copy.deepcopy(part_results.get("Body")),
         "head_evidence": copy.deepcopy(part_results.get("Head")),
         "tail_evidence": copy.deepcopy(part_results.get("Tail")),
@@ -802,8 +865,10 @@ def _formal_session_preconditions(
     model2_snapshot: Mapping[str, object],
     configuration_completeness: Mapping[str, object],
     camera_snapshot: Mapping[str, object],
+    intended_report_class: str,
     validation_gate: str,
     test_gate: str,
+    audit_manifest_binding: Mapping[str, object],
     git: Mapping[str, object],
     dirty_worktree_acknowledged: bool,
 ) -> dict[str, object]:
@@ -814,6 +879,7 @@ def _formal_session_preconditions(
     study.  This function does not change a model, policy, or camera.
     """
 
+    required_audit_gate = _required_audit_gate_for_report_class(intended_report_class)
     checks = {
         "dataset_manifest_hash": _PASS if _optional_text(dataset_snapshot.get("sha256")) else _PENDING,
         "model1_hash": _PASS if _optional_text(model1_snapshot.get("sha256")) else _PENDING,
@@ -821,9 +887,13 @@ def _formal_session_preconditions(
         "configuration_snapshot": _status(configuration_completeness.get("status")),
         "camera_calibration": _PASS if camera_snapshot.get("calibration_confirmed") is True else _PENDING,
         "camera_lock": _PASS if camera_snapshot.get("locked") is True else _PENDING,
-        "independent_validation_audit": validation_gate,
-        "locked_test_audit": test_gate,
     }
+    if required_audit_gate == "validation":
+        checks["independent_validation_audit"] = validation_gate
+    elif required_audit_gate == "test":
+        checks["locked_test_audit"] = test_gate
+    if required_audit_gate is not None:
+        checks["dataset_audit_manifest_binding"] = _status(audit_manifest_binding.get("status"))
     dirty = git.get("working_tree_dirty")
     if dirty is True:
         checks["working_tree"] = _PASS if dirty_worktree_acknowledged else _PENDING
@@ -837,6 +907,10 @@ def _formal_session_preconditions(
         "status": _PASS if not blockers else _BLOCKED,
         "checks": checks,
         "blockers": blockers,
+        "intended_report_class": intended_report_class,
+        "required_audit_gate": required_audit_gate,
+        "audit_gate_statuses": {"validation": validation_gate, "test": test_gate},
+        "audit_manifest_binding": copy.deepcopy(dict(audit_manifest_binding)),
         "dirty_worktree_acknowledged": dirty_worktree_acknowledged if dirty is True else None,
     }
 
@@ -844,6 +918,269 @@ def _formal_session_preconditions(
 def _manifest_digest(manifest: Mapping[str, object]) -> str:
     body = {str(key): value for key, value in manifest.items() if key != "manifest_sha256"}
     return hashlib.sha256(_canonical_json(body, field="validation_session_manifest")).hexdigest()
+
+
+def _audit_manifest_binding(
+    dataset_audit: Mapping[str, object] | str | None,
+    dataset_manifest_sha256: object,
+    *,
+    required_audit_gate: str | None,
+) -> dict[str, object]:
+    """Confirm that an independence audit was run against this exact manifest.
+
+    A PASS audit for another split manifest cannot support an independent or
+    locked claim.  Development and compatibility sessions do not make either
+    claim, so they retain the audit snapshot without treating a missing native
+    audit hash as a formal-session blocker.
+    """
+
+    expected = _hash_or_none(dataset_manifest_sha256, field="dataset.manifest_sha256")
+    if required_audit_gate is None:
+        return {
+            "status": _NOT_TESTED,
+            "required": False,
+            "expected_study_manifest_sha256": expected,
+            "audit_study_manifest_sha256": None,
+        }
+    if expected is None:
+        return {
+            "status": _PENDING,
+            "required": True,
+            "expected_study_manifest_sha256": None,
+            "audit_study_manifest_sha256": None,
+            "reason": "The session dataset manifest hash is unavailable.",
+        }
+    inputs = dataset_audit.get("inputs") if isinstance(dataset_audit, Mapping) else None
+    raw_audit_hash = inputs.get("study_manifest_sha256") if isinstance(inputs, Mapping) else None
+    try:
+        audited = _hash_or_none(raw_audit_hash, field="dataset_audit.inputs.study_manifest_sha256")
+    except ValidationStudyError:
+        audited = None
+    if audited is None:
+        return {
+            "status": _PENDING,
+            "required": True,
+            "expected_study_manifest_sha256": expected,
+            "audit_study_manifest_sha256": None,
+            "reason": "The dataset-independence audit does not record inputs.study_manifest_sha256.",
+        }
+    return {
+        "status": _PASS if audited == expected else _FAIL,
+        "required": True,
+        "expected_study_manifest_sha256": expected,
+        "audit_study_manifest_sha256": audited,
+        "reason": None if audited == expected else "The dataset-independence audit belongs to a different study manifest.",
+    }
+
+
+def _internal_formal_session_validation(source: Mapping[str, object]) -> dict[str, object]:
+    """Validate a locked manifest's self-contained evidence without files.
+
+    Per-fish study rows may be assembled after artifacts have moved to archival
+    storage.  They must still reject an altered or incomplete manifest, but do
+    not require that every checkpoint and dataset path remain mounted merely to
+    copy already-recorded provenance.
+    """
+
+    checks: list[dict[str, object]] = []
+    errors: list[str] = []
+
+    def record(component: str, passed: bool, detail: str) -> None:
+        checks.append({"component": component, "status": _PASS if passed else _FAIL, "detail": detail})
+        if not passed:
+            errors.append(f"{component}: {detail}")
+
+    intended_class: str | None = None
+    required_audit_gate: str | None = None
+    try:
+        expected_digest = _hash_or_none(source.get("manifest_sha256"), field="session_manifest.manifest_sha256")
+        actual_digest = _manifest_digest(source)
+        record(
+            "manifest_integrity",
+            expected_digest is not None and expected_digest == actual_digest,
+            "manifest_sha256 is missing or does not match the manifest contents.",
+        )
+        study = _require_mapping(source.get("study"), field="session_manifest.study")
+        dataset = _require_mapping(source.get("dataset"), field="session_manifest.dataset")
+        models = _require_mapping(source.get("models"), field="session_manifest.models")
+        configuration = _require_mapping(source.get("configuration"), field="session_manifest.configuration")
+        camera = _require_mapping(source.get("camera"), field="session_manifest.camera")
+        application = _require_mapping(source.get("application"), field="session_manifest.application")
+
+        intended_class = _normalize_study_report_class(
+            study.get("intended_report_class"),
+            field="session_manifest.study.intended_report_class",
+        )
+        required_audit_gate = _required_audit_gate_for_report_class(intended_class)
+        record("session_locked", study.get("session_locked") is True, "session_locked must be true.")
+        record("formal_ready", study.get("formal_ready") is True, "formal_ready must be true.")
+        record("session_state", study.get("state") == "LOCKED", "state must be LOCKED.")
+        record(
+            "required_audit_gate",
+            study.get("required_audit_gate") == required_audit_gate,
+            "stored study scope does not match its required audit gate.",
+        )
+
+        dataset_hash = _hash_or_none(dataset.get("manifest_sha256"), field="session_manifest.dataset.manifest_sha256")
+        record("dataset_manifest_hash", dataset_hash is not None, "dataset manifest hash is required.")
+        model1 = _require_mapping(models.get("model1"), field="session_manifest.models.model1")
+        model2 = _require_mapping(models.get("model2"), field="session_manifest.models.model2")
+        record(
+            "model1_hash",
+            _hash_or_none(model1.get("sha256"), field="session_manifest.models.model1.sha256") is not None,
+            "Model 1 hash is required.",
+        )
+        record(
+            "model2_hash",
+            _hash_or_none(model2.get("sha256"), field="session_manifest.models.model2.sha256") is not None,
+            "Model 2 hash is required.",
+        )
+
+        configuration_snapshot = _require_mapping(
+            configuration.get("snapshot"),
+            field="session_manifest.configuration.snapshot",
+        )
+        configuration_hash = _hash_or_none(
+            configuration.get("sha256"),
+            field="session_manifest.configuration.sha256",
+        )
+        record(
+            "configuration_hash",
+            configuration_hash == hashlib.sha256(
+                _canonical_json(configuration_snapshot, field="session_manifest.configuration.snapshot")
+            ).hexdigest(),
+            "configuration hash is missing or does not match the frozen snapshot.",
+        )
+        recomputed_configuration = configuration_snapshot_completeness(configuration_snapshot)
+        record(
+            "configuration_snapshot",
+            recomputed_configuration["status"] == _PASS,
+            "frozen configuration is incomplete.",
+        )
+
+        profile = _require_mapping(camera.get("profile"), field="session_manifest.camera.profile")
+        camera_hash = _hash_or_none(camera.get("profile_sha256"), field="session_manifest.camera.profile_sha256")
+        record(
+            "camera_profile_hash",
+            camera_hash == hashlib.sha256(_canonical_json(profile, field="session_manifest.camera.profile")).hexdigest(),
+            "camera profile hash is missing or does not match the frozen profile.",
+        )
+        record(
+            "camera_calibration",
+            camera.get("calibration_confirmed") is True and camera.get("calibration_status") == "CONFIRMED",
+            "camera calibration must be explicitly confirmed.",
+        )
+        record(
+            "camera_lock",
+            camera.get("locked") is True and camera.get("lock_status") == "LOCKED",
+            "camera profile must be locked.",
+        )
+
+        audit_snapshot = dataset.get("independence_audit")
+        audit_value = audit_snapshot if isinstance(audit_snapshot, (Mapping, str)) else None
+        validation_gate = audit_gate_status(audit_value, gate="validation")
+        test_gate = audit_gate_status(audit_value, gate="test")
+        audit_binding = _audit_manifest_binding(
+            audit_value,
+            dataset_hash,
+            required_audit_gate=required_audit_gate,
+        )
+        if required_audit_gate == "validation":
+            record(
+                "independent_validation_audit",
+                validation_gate == _PASS,
+                "the independent validation audit gate must be PASS.",
+            )
+        elif required_audit_gate == "test":
+            record(
+                "locked_test_audit",
+                test_gate == _PASS,
+                "the locked test audit gate must be PASS.",
+            )
+        if required_audit_gate is not None:
+            record(
+                "dataset_audit_manifest_binding",
+                audit_binding["status"] == _PASS,
+                str(audit_binding.get("reason") or "audit manifest binding must be PASS."),
+            )
+        stored_binding = _require_mapping(
+            dataset.get("audit_manifest_binding"),
+            field="session_manifest.dataset.audit_manifest_binding",
+        )
+        record(
+            "audit_manifest_binding_snapshot",
+            _canonical_value(stored_binding, field="session_manifest.dataset.audit_manifest_binding")
+            == _canonical_value(audit_binding, field="recomputed_audit_manifest_binding"),
+            "stored audit-manifest binding does not match the frozen dataset audit and manifest hash.",
+        )
+
+        record("git_commit", _optional_text(application.get("git_commit")) is not None, "git commit is required.")
+        dirty = application.get("working_tree_dirty")
+        record(
+            "working_tree",
+            dirty is False or (dirty is True and application.get("dirty_worktree_acknowledged") is True),
+            "working-tree state must be clean or explicitly acknowledged.",
+        )
+
+        recomputed_preconditions = _formal_session_preconditions(
+            dataset_snapshot={"sha256": dataset_hash},
+            model1_snapshot={"sha256": model1.get("sha256")},
+            model2_snapshot={"sha256": model2.get("sha256")},
+            configuration_completeness=recomputed_configuration,
+            camera_snapshot={
+                "calibration_confirmed": camera.get("calibration_confirmed") is True,
+                "locked": camera.get("locked") is True,
+            },
+            intended_report_class=intended_class,
+            validation_gate=validation_gate,
+            test_gate=test_gate,
+            audit_manifest_binding=audit_binding,
+            git=application,
+            dirty_worktree_acknowledged=application.get("dirty_worktree_acknowledged") is True,
+        )
+        stored_preconditions = _require_mapping(
+            study.get("preconditions"),
+            field="session_manifest.study.preconditions",
+        )
+        stored_checks = _require_mapping(
+            stored_preconditions.get("checks"),
+            field="session_manifest.study.preconditions.checks",
+        )
+        record(
+            "formal_preconditions",
+            recomputed_preconditions["status"] == _PASS and stored_preconditions.get("status") == _PASS,
+            "formal preconditions must be internally PASS.",
+        )
+        record(
+            "stored_preconditions_scope",
+            stored_preconditions.get("intended_report_class") == intended_class
+            and stored_preconditions.get("required_audit_gate") == required_audit_gate,
+            "stored preconditions do not match the intended report class.",
+        )
+        for name, expected_status in _require_mapping(
+            recomputed_preconditions.get("checks"),
+            field="recomputed_preconditions.checks",
+        ).items():
+            record(
+                f"stored_precondition_{name}",
+                stored_checks.get(name) == expected_status,
+                f"stored {name} precondition does not match the frozen inputs.",
+            )
+        record(
+            "stored_precondition_blockers",
+            stored_preconditions.get("blockers") == [],
+            "formal locked manifest must not retain precondition blockers.",
+        )
+    except ValidationStudyError as exc:
+        errors.append(str(exc))
+        checks.append({"component": "manifest_structure", "status": _FAIL, "detail": str(exc)})
+    return {
+        "valid": not errors,
+        "checks": checks,
+        "errors": errors,
+        "intended_report_class": intended_class,
+        "required_audit_gate": required_audit_gate,
+    }
 
 
 def create_validation_session_manifest(
@@ -861,6 +1198,7 @@ def create_validation_session_manifest(
     camera_calibration_confirmed: bool | None = None,
     camera_locked: bool | None = None,
     dataset_audit: Mapping[str, object] | str | None = None,
+    intended_report_class: str = "DEVELOPMENT_VALIDATION",
     sample_count: int = 0,
     operator_notes: str | None = None,
     application_commit: str | None = None,
@@ -876,6 +1214,14 @@ def create_validation_session_manifest(
     collection/evaluation to detect a changed artifact or configuration.
     """
 
+    # The conservative default is intentionally non-independent.  A caller
+    # must explicitly choose INDEPENDENT_VALIDATION or LOCKED_TEST before the
+    # resulting session can support either performance label.
+    intended_class = _normalize_study_report_class(
+        intended_report_class,
+        field="intended_report_class",
+    )
+    required_audit_gate = _required_audit_gate_for_report_class(intended_class)
     manifest_hash = _hash_or_none(dataset_manifest_hash, field="dataset_manifest_hash")
     dataset_snapshot = _artifact_snapshot(
         dataset_manifest_path,
@@ -899,6 +1245,11 @@ def create_validation_session_manifest(
         audit_snapshot = _canonical_value(_require_mapping(dataset_audit, field="dataset_audit"), field="dataset_audit")
     validation_gate = audit_gate_status(audit_snapshot if isinstance(audit_snapshot, Mapping) else None, gate="validation")
     test_gate = audit_gate_status(audit_snapshot if isinstance(audit_snapshot, Mapping) else None, gate="test")
+    audit_manifest_binding = _audit_manifest_binding(
+        audit_snapshot if isinstance(audit_snapshot, Mapping) else None,
+        dataset_snapshot.get("sha256"),
+        required_audit_gate=required_audit_gate,
+    )
     git = _git_snapshot(
         repository_root=repository_root,
         application_commit=application_commit,
@@ -915,16 +1266,27 @@ def create_validation_session_manifest(
         model2_snapshot=model2_snapshot,
         configuration_completeness=configuration_completeness,
         camera_snapshot=camera_snapshot,
+        intended_report_class=intended_class,
         validation_gate=validation_gate,
         test_gate=test_gate,
+        audit_manifest_binding=audit_manifest_binding,
         git=git,
         dirty_worktree_acknowledged=allow_dirty_worktree,
     )
     formal_ready = preconditions["status"] == _PASS
     timestamp = _optional_text(started_at) or datetime.now(timezone.utc).isoformat()
     warnings: list[str] = []
-    if validation_gate != _PASS or test_gate != _PASS:
-        warnings.append("Dataset independence audit has not passed for both validation and locked test claims.")
+    if required_audit_gate is not None:
+        required_status = validation_gate if required_audit_gate == "validation" else test_gate
+        if required_status != _PASS:
+            warnings.append(
+                f"Dataset independence audit has not passed the {required_audit_gate} gate required for {intended_class}."
+            )
+        if audit_manifest_binding["status"] != _PASS:
+            warnings.append(
+                "Dataset-independence audit is not cryptographically bound to this study manifest; "
+                "independent and locked study claims remain blocked."
+            )
     if not camera_snapshot["calibration_confirmed"]:
         warnings.append("Camera calibration has not been explicitly confirmed by an operator.")
     if not camera_snapshot["locked"]:
@@ -947,6 +1309,8 @@ def create_validation_session_manifest(
             "started_at": timestamp,
             "sample_count": _non_negative_integer(sample_count, field="sample_count"),
             "operator_notes": _optional_text(operator_notes),
+            "intended_report_class": intended_class,
+            "required_audit_gate": required_audit_gate,
             "session_locked": formal_ready,
             "formal_ready": formal_ready,
             "state": "LOCKED" if formal_ready else "DRAFT",
@@ -959,6 +1323,7 @@ def create_validation_session_manifest(
             "independence_audit": audit_snapshot,
             "independent_validation_status": validation_gate,
             "independent_test_status": test_gate,
+            "audit_manifest_binding": audit_manifest_binding,
         },
         "models": {
             "model1": model1_snapshot,
@@ -1018,6 +1383,23 @@ def verify_validation_session_manifest(
     actual_digest = _manifest_digest(source)
     _compare_snapshot(checks, component="manifest_integrity", expected=expected_digest, actual=actual_digest)
     study = _require_mapping(source.get("study"), field="manifest.study")
+    intended_report_class = _normalize_study_report_class(
+        study.get("intended_report_class"),
+        field="manifest.study.intended_report_class",
+    )
+    required_audit_gate = _required_audit_gate_for_report_class(intended_report_class)
+    _compare_snapshot(
+        checks,
+        component="intended_report_class",
+        expected=intended_report_class,
+        actual=study.get("intended_report_class"),
+    )
+    _compare_snapshot(
+        checks,
+        component="required_audit_gate",
+        expected=required_audit_gate,
+        actual=study.get("required_audit_gate"),
+    )
     _compare_snapshot(checks, component="session_locked", expected=True, actual=study.get("session_locked") is True)
     _compare_snapshot(checks, component="formal_preconditions", expected=True, actual=study.get("formal_ready") is True)
     _compare_snapshot(checks, component="session_state", expected="LOCKED", actual=study.get("state"))
@@ -1026,6 +1408,13 @@ def verify_validation_session_manifest(
     configuration_snapshot = _require_mapping(source.get("configuration"), field="manifest.configuration")
     camera = _require_mapping(source.get("camera"), field="manifest.camera")
     application = _require_mapping(source.get("application"), field="manifest.application")
+    internal_validation = _internal_formal_session_validation(source)
+    _compare_snapshot(
+        checks,
+        component="formal_lock_prerequisites",
+        expected=True,
+        actual=internal_validation["valid"] is True,
+    )
 
     def compare_artifact(component: str, expected: Mapping[str, object], replacement: str | Path | None) -> None:
         expected_hash = _hash_or_none(expected.get("sha256"), field=f"{component}.sha256")
@@ -1094,18 +1483,34 @@ def verify_validation_session_manifest(
     _compare_snapshot(checks, component="camera_calibration_confirmed", expected=True, actual=provided_camera["calibration_confirmed"] is True)
     _compare_snapshot(checks, component="camera_profile_locked", expected=True, actual=provided_camera["locked"] is True)
 
-    _compare_snapshot(
-        checks,
-        component="independent_validation_audit",
-        expected=_PASS,
-        actual=audit_gate_status(dataset.get("independence_audit") if isinstance(dataset.get("independence_audit"), Mapping) else None, gate="validation"),
-    )
-    _compare_snapshot(
-        checks,
-        component="locked_test_audit",
-        expected=_PASS,
-        actual=audit_gate_status(dataset.get("independence_audit") if isinstance(dataset.get("independence_audit"), Mapping) else None, gate="test"),
-    )
+    audit_snapshot = dataset.get("independence_audit")
+    audit_value = audit_snapshot if isinstance(audit_snapshot, (Mapping, str)) else None
+    if required_audit_gate == "validation":
+        _compare_snapshot(
+            checks,
+            component="independent_validation_audit",
+            expected=_PASS,
+            actual=audit_gate_status(audit_value, gate="validation"),
+        )
+    elif required_audit_gate == "test":
+        _compare_snapshot(
+            checks,
+            component="locked_test_audit",
+            expected=_PASS,
+            actual=audit_gate_status(audit_value, gate="test"),
+        )
+    if required_audit_gate is not None:
+        audit_binding = _audit_manifest_binding(
+            audit_value,
+            dataset.get("manifest_sha256"),
+            required_audit_gate=required_audit_gate,
+        )
+        _compare_snapshot(
+            checks,
+            component="dataset_audit_manifest_binding",
+            expected=_PASS,
+            actual=audit_binding["status"],
+        )
     _compare_snapshot(
         checks,
         component="git_commit_available",
@@ -1351,12 +1756,8 @@ def classify_study_report(
 ) -> dict[str, object]:
     """Gate a report class against the matching data-independence evidence."""
 
-    requested = _require_text(report_class, field="report_class").upper().replace("-", "_").replace(" ", "_")
-    if requested not in STUDY_REPORT_CLASSES:
-        raise ValidationStudyError("report_class must be one of: " + ", ".join(STUDY_REPORT_CLASSES) + ".")
-    required_gate = (
-        "validation" if requested == "INDEPENDENT_VALIDATION" else "test" if requested == "LOCKED_TEST" else None
-    )
+    requested = _normalize_study_report_class(report_class, field="report_class")
+    required_gate = _required_audit_gate_for_report_class(requested)
     audit_status = audit_gate_status(dataset_audit, gate=required_gate) if required_gate else None
     allowed = required_gate is None or audit_status == _PASS
     approved = requested if allowed else "COMPATIBILITY_TEST"
@@ -1400,19 +1801,28 @@ def _summary_session_context(session_manifest: Mapping[str, object] | None) -> d
     application = _require_mapping(source.get("application"), field="session_manifest.application")
     expected_digest = _hash_or_none(source.get("manifest_sha256"), field="session_manifest.manifest_sha256")
     integrity = _PASS if expected_digest == _manifest_digest(source) else _FAIL
-    locked = study.get("session_locked") is True and study.get("formal_ready") is True and integrity == _PASS
+    internal_validation = _internal_formal_session_validation(source)
+    locked = internal_validation["valid"] is True
+    manifest_warnings = [str(item) for item in source.get("warnings", []) if str(item).strip()]
+    if internal_validation["errors"]:
+        manifest_warnings.append(
+            "Formal locked-session prerequisites are invalid: "
+            + "; ".join(str(item) for item in internal_validation["errors"])
+        )
     return {
         "available": True,
         "locked": locked,
         "manifest_integrity": integrity,
         "manifest_sha256": expected_digest,
+        "intended_report_class": internal_validation["intended_report_class"],
+        "required_audit_gate": internal_validation["required_audit_gate"],
         "study": copy.deepcopy(dict(study)),
         "dataset": copy.deepcopy(dict(dataset)),
         "camera": copy.deepcopy(dict(camera)),
         "models": copy.deepcopy(dict(models)),
         "configuration": copy.deepcopy(dict(configuration)),
         "application": copy.deepcopy(dict(application)),
-        "warnings": [str(item) for item in source.get("warnings", []) if str(item).strip()],
+        "warnings": manifest_warnings,
     }
 
 
@@ -1466,13 +1876,21 @@ def build_study_summary(
         effective_audit = candidate if isinstance(candidate, (Mapping, str)) else None
     report_guard = classify_study_report(report_class, effective_audit)
     approved_class = str(report_guard["approved_report_class"])
-    if approved_class in {"INDEPENDENT_VALIDATION", "LOCKED_TEST"} and not context["locked"]:
+    intended_class = context.get("intended_report_class")
+    if approved_class in {"INDEPENDENT_VALIDATION", "LOCKED_TEST"} and (
+        not context["locked"] or intended_class != approved_class
+    ):
+        session_requirement = (
+            "Independent or locked wording requires a valid locked validation-session manifest."
+            if not context["locked"]
+            else f"This locked session was scoped for {intended_class or 'an unspecified report class'}, not {approved_class}."
+        )
         report_guard = {
             **report_guard,
             "approved_report_class": "COMPATIBILITY_TEST",
             "display_label": "COMPATIBILITY TEST",
             "claim_allowed": False,
-            "warning": "Independent or locked wording requires a valid locked validation-session manifest.",
+            "warning": session_requirement,
         }
         approved_class = "COMPATIBILITY_TEST"
 
@@ -1502,12 +1920,16 @@ def build_study_summary(
         "evaluation_timestamp": (
             supplied_model2_provenance.get("evaluation_timestamp")
             or supplied_model2_provenance.get("evaluated_utc")
-            or datetime.now(timezone.utc).isoformat()
+            or None
         ),
     }
     limitations = list(context["warnings"] if isinstance(context["warnings"], list) else [])
     if report_guard.get("warning"):
         limitations.append(str(report_guard["warning"]))
+    if model2_results is not None and model2_provenance["evaluation_timestamp"] is None:
+        limitations.append(
+            "Model 2 evaluation timestamp was not reported by the supplied source; this summary does not invent one."
+        )
     if known_limitations is not None:
         limitations.extend(_require_text(item, field="known_limitations") for item in known_limitations)
     limitations.extend(

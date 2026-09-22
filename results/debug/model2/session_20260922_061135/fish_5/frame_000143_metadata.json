@@ -1,0 +1,38 @@
+{
+  "fish_id": 5,
+  "frame_number": 143,
+  "letterbox": {
+    "padding": {
+      "bottom": 0,
+      "left": 179,
+      "right": 180,
+      "top": 0
+    },
+    "resize_method": "YOLO-compatible letterbox preview; model.predict performs the authoritative internal preprocessing",
+    "scale": 2.58064516
+  },
+  "model1_box": [
+    316.8809814453125,
+    100.96453094482422,
+    424.9366455078125,
+    347.92218017578125
+  ],
+  "model2_confidence_threshold": 0.25,
+  "model2_input_dimensions": {
+    "height": 640,
+    "width": 640
+  },
+  "note": "This is a debug-only, bounded artifact. It is not inspection history and cannot alter a prediction.",
+  "padded_roi_box": [
+    316,
+    100,
+    425,
+    348
+  ],
+  "raw_detections": [],
+  "roi_original_dimensions": {
+    "height": 248,
+    "width": 109
+  },
+  "selected_detections": []
+}

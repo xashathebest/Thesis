@@ -1,0 +1,179 @@
+{
+  "fish_id": 6,
+  "frame_number": 143,
+  "letterbox": {
+    "padding": {
+      "bottom": 0,
+      "left": 176,
+      "right": 177,
+      "top": 0
+    },
+    "resize_method": "YOLO-compatible letterbox preview; model.predict performs the authoritative internal preprocessing",
+    "scale": 2.86995516
+  },
+  "model1_box": [
+    423.83099365234375,
+    111.49811553955078,
+    522.1586303710938,
+    333.82586669921875
+  ],
+  "model2_confidence_threshold": 0.25,
+  "model2_input_dimensions": {
+    "height": 640,
+    "width": 640
+  },
+  "note": "This is a debug-only, bounded artifact. It is not inspection history and cannot alter a prediction.",
+  "padded_roi_box": [
+    423,
+    111,
+    523,
+    334
+  ],
+  "raw_detections": [
+    {
+      "bbox": [
+        55.962215423583984,
+        173.76510620117188,
+        92.52610778808594,
+        220.54664611816406
+      ],
+      "confidence": 0.06097753345966339,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 6,
+      "source_class_name": "Grade_C_Body"
+    },
+    {
+      "bbox": [
+        55.962215423583984,
+        173.76510620117188,
+        92.52610778808594,
+        220.54664611816406
+      ],
+      "confidence": 0.02837332710623741,
+      "grade": "Class B",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 3,
+      "source_class_name": "Grade_B_Body"
+    },
+    {
+      "bbox": [
+        71.25144958496094,
+        131.61036682128906,
+        90.22984313964844,
+        166.65313720703125
+      ],
+      "confidence": 0.009818472899496555,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Tail",
+      "source_class_id": 8,
+      "source_class_name": "Grade_C_Tail"
+    },
+    {
+      "bbox": [
+        23.326923370361328,
+        139.8563232421875,
+        56.661251068115234,
+        198.37710571289062
+      ],
+      "confidence": 0.004248494748026133,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 6,
+      "source_class_name": "Grade_C_Body"
+    },
+    {
+      "bbox": [
+        42.68280792236328,
+        3.4209306240081787,
+        70.23477172851562,
+        40.17796325683594
+      ],
+      "confidence": 0.00403217738494277,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Tail",
+      "source_class_id": 8,
+      "source_class_name": "Grade_C_Tail"
+    },
+    {
+      "bbox": [
+        23.70568084716797,
+        136.47938537597656,
+        56.72627258300781,
+        198.21987915039062
+      ],
+      "confidence": 0.003933577798306942,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Tail",
+      "source_class_id": 8,
+      "source_class_name": "Grade_C_Tail"
+    },
+    {
+      "bbox": [
+        23.326923370361328,
+        139.8563232421875,
+        56.661251068115234,
+        198.37710571289062
+      ],
+      "confidence": 0.0027427843306213617,
+      "grade": "Class B",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 3,
+      "source_class_name": "Grade_B_Body"
+    },
+    {
+      "bbox": [
+        23.519420623779297,
+        137.4396514892578,
+        56.14397048950195,
+        195.57737731933594
+      ],
+      "confidence": 0.001929112826474011,
+      "grade": "Class A",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 0,
+      "source_class_name": "Grade_A_Body"
+    },
+    {
+      "bbox": [
+        71.81444549560547,
+        132.720703125,
+        90.53727722167969,
+        167.95449829101562
+      ],
+      "confidence": 0.001393924350850284,
+      "grade": "Class B",
+      "mask": null,
+      "region": "Tail",
+      "source_class_id": 5,
+      "source_class_name": "Grade_B_Tail"
+    },
+    {
+      "bbox": [
+        42.298667907714844,
+        4.153994083404541,
+        72.35140228271484,
+        44.939048767089844
+      ],
+      "confidence": 0.0012098102597519755,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Tail",
+      "source_class_id": 8,
+      "source_class_name": "Grade_C_Tail"
+    }
+  ],
+  "roi_original_dimensions": {
+    "height": 223,
+    "width": 100
+  },
+  "selected_detections": []
+}

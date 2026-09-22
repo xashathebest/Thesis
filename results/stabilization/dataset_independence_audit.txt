@@ -5,13 +5,16 @@ Lineage-connected groups combine every recorded relationship and may differ from
 Train lineage-connected groups: 869 (samples: 1526)
 Validation lineage-connected groups: 41 (samples: 115)
 Test lineage-connected groups: 43 (samples: 115)
+Model-training lineage: PROVIDED
+Exact file-content hash scan: NOT_AVAILABLE (0 sample(s) fingerprinted)
+Audited study artifact SHA-256: 5067a3d28e78d119c59bdb560939dfbc41f425451f09cfb0d862e07887f2226f
 
 Train <-> Validation overlap: 39 group(s)
 Train <-> Test overlap: 38 group(s)
 Validation <-> Test overlap: 0 group(s)
 
 Missing explicit provenance: 0 sample(s)
-Near-duplicate scan: NOT_REQUESTED (not run; suspicious near duplicates were not scanned)
+Near-duplicate scan: INCOMPLETE (incomplete; review unavailable samples or the comparison limit before relying on this check)
 Independent validation: FAIL
 Independent test: FAIL
 FINAL PERFORMANCE CERTIFICATION = BLOCKED

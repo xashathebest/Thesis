@@ -44,7 +44,7 @@ import random
 import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from itertools import combinations
 from pathlib import Path
@@ -96,6 +96,11 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "capture_session": ("capture_session", "session_id"),
     "source_folder": ("source_folder",),
 }
+# ``source_group`` is an opaque collection identifier.  Unlike exported image
+# names, a slash in it can be meaningful (for example, a recording/session
+# namespace), so it must retain its path context.  ``original_source`` and an
+# augmentation parent are commonly file-name-like values emitted by different
+# exporters and retain the more permissive origin normalization below.
 ORIGIN_RELATION_TYPES = {"source_group", "original_source", "augmentation_parent"}
 CONFIRMED_RELATION_TYPES = {
     "source_group",
@@ -106,6 +111,7 @@ CONFIRMED_RELATION_TYPES = {
     "capture_session",
     "source_folder",
     "sha256",
+    "file_content_sha256",
     # ``origin`` bridges an explicit source-group value in one manifest to an
     # original-source/augmentation-parent value in another manifest.
     "origin",
@@ -324,7 +330,17 @@ def _record_from_mapping(
         }:
             continue
         raw_values = _values_for(fields, aliases)
-        normalizer = _normalize_origin if relation in ORIGIN_RELATION_TYPES else _normalize_relation
+        # Source-group values are opaque group IDs, not file names.  Preserve
+        # a path-like namespace here so ``session-a/fish-001`` cannot be
+        # silently joined to ``session-b/fish-001`` merely because their final
+        # path segment is the same.
+        normalizer = (
+            _normalize_relation
+            if relation == "source_group"
+            else _normalize_origin
+            if relation in ORIGIN_RELATION_TYPES
+            else _normalize_relation
+        )
         normalized = tuple(value for value in (normalizer(item) for item in raw_values) if value)
         if normalized:
             provenance[relation] = tuple(dict.fromkeys(normalized))
@@ -360,10 +376,28 @@ def normalize_records(
 ) -> list[DatasetRecord]:
     """Normalize manifest rows without reading, moving, or rewriting images."""
 
+    normalized_forced_split = _canonical_split(forced_split) if forced_split is not None else None
+    if forced_split is not None and normalized_forced_split not in SPLITS:
+        raise DatasetIndependenceError(f"Forced split must be one of {', '.join(SPLITS)}.")
+
     result: list[DatasetRecord] = []
     for row_number, row in enumerate(rows, start=2):
         if isinstance(row, DatasetRecord):
-            result.append(row)
+            # Model-training lineage is sometimes already normalized by a
+            # caller.  It must still be considered training exposure even if
+            # its retained historical row says ``validation`` or ``test``.
+            # ``DatasetRecord`` is frozen, hence the explicit replacement.
+            changes: dict[str, object] = {}
+            if normalized_forced_split is not None:
+                changes.update(split=normalized_forced_split, missing_split=False)
+            # A caller may normalize records before learning the image root.
+            # Preserve a previously resolved path, but make an accessible
+            # root usable for content-hash evidence when the record has none.
+            if image_root is not None and (
+                row.resolved_image_path is None or not row.resolved_image_path.is_absolute()
+            ):
+                changes["resolved_image_path"] = _resolve_image_path(row.image_path, image_root)
+            result.append(replace(row, **changes) if changes else row)
         elif isinstance(row, Mapping):
             result.append(
                 _record_from_mapping(
@@ -371,7 +405,7 @@ def normalize_records(
                     source_name=source_name,
                     row_number=row_number,
                     image_root=image_root,
-                    forced_split=forced_split,
+                    forced_split=normalized_forced_split,
                 )
             )
         else:
@@ -437,7 +471,11 @@ def load_manifest(
     return normalize_records(rows, source_name=source_name, image_root=root, forced_split=forced_split)
 
 
-def _build_graph(records: Sequence[DatasetRecord]) -> _RelationshipGraph:
+def _build_graph(
+    records: Sequence[DatasetRecord],
+    *,
+    file_content_hashes: Mapping[int, str] | None = None,
+) -> _RelationshipGraph:
     graph = _RelationshipGraph(list(records), _UnionFind.create(len(records)))
     for index, record in enumerate(records):
         for relation_type, values in record.provenance.items():
@@ -453,12 +491,60 @@ def _build_graph(records: Sequence[DatasetRecord]) -> _RelationshipGraph:
             graph.add_token(f"filename:{record.filename}", index)
         if record.file_sha256:
             graph.add_token(f"sha256:{record.file_sha256}", index)
+        content_hash = (file_content_hashes or {}).get(index, "")
+        if content_hash:
+            # Keep ``sha256`` as a compatibility token for consumers that
+            # already inspect that evidence, while retaining the more precise
+            # token type in the component evidence and audit report.
+            graph.add_token(f"sha256:{content_hash}", index)
+            graph.add_token(f"file_content_sha256:{content_hash}", index)
     return graph
+
+
+def _stable_record_payload(record: DatasetRecord) -> dict[str, object]:
+    """Return row-order-independent evidence for IDs and audit binding.
+
+    ``uid`` deliberately includes a manifest row number and therefore cannot
+    safely contribute to a reproducible group ID.  The normalized content is
+    enough to retain duplicate-row multiplicity while making the order of the
+    input iterable irrelevant.
+    """
+
+    return {
+        "sample_id": record.sample_id,
+        "split": record.split,
+        "image_path": record.image_path,
+        "annotation_path": record.annotation_path,
+        "class_information": record.class_information,
+        "file_sha256": record.file_sha256,
+        "filename": record.filename,
+        "provenance": {
+            relation: sorted(values)
+            for relation, values in sorted(record.provenance.items())
+        },
+        "original_source": record.original_source,
+        "missing_sample_id": record.missing_sample_id,
+        "missing_split": record.missing_split,
+    }
+
+
+def _stable_record_key(record: DatasetRecord) -> str:
+    return json.dumps(_stable_record_payload(record), sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def _records_sha256(records: Sequence[DatasetRecord]) -> str:
+    """Hash normalized study evidence independently of CSV/JSON row order."""
+
+    digest = hashlib.sha256()
+    for key in sorted(_stable_record_key(record) for record in records):
+        digest.update(key.encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
 
 
 def _component_id(records: Sequence[DatasetRecord], indexes: Sequence[int], tokens: Sequence[str]) -> str:
     digest = hashlib.sha256()
-    for value in sorted((records[index].uid for index in indexes)):
+    for value in sorted((_stable_record_key(records[index]) for index in indexes)):
         digest.update(value.encode("utf-8"))
         digest.update(b"\0")
     for token in sorted(tokens):
@@ -516,6 +602,77 @@ def _hash_image(path: Path) -> int:
     for pixel in pixels:
         value = (value << 1) | int(pixel >= threshold)
     return value
+
+
+def _file_sha256(path: Path) -> str:
+    """Return a content digest without loading an image decoder or model."""
+
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _exact_file_hash_scan(
+    records: Sequence[DatasetRecord],
+) -> tuple[dict[int, str], dict[str, object]]:
+    """Compute exact file-content hashes wherever manifest paths are usable.
+
+    Declared hashes remain useful provenance, but an older manifest often has
+    none.  This scan closes that gap for accessible local files without
+    requiring the optional perceptual-duplicate scan.  Missing files are
+    reported rather than fabricated, moved, or treated as a successful scan.
+    """
+
+    fingerprints: dict[int, str] = {}
+    unavailable: list[dict[str, str]] = []
+    cache: dict[Path, str] = {}
+    declared_mismatches: list[dict[str, str]] = []
+    for index, record in enumerate(records):
+        path = record.resolved_image_path
+        if path is None or not path.is_file():
+            unavailable.append({"sample": record.reference, "reason": "image_path is unavailable"})
+            continue
+        try:
+            # Resolve for caching only; the original path remains the audit
+            # evidence and no file is modified.
+            cache_key = path.resolve()
+            digest = cache.get(cache_key)
+            if digest is None:
+                digest = _file_sha256(path)
+                cache[cache_key] = digest
+            fingerprints[index] = digest
+            if record.file_sha256 and record.file_sha256 != digest:
+                declared_mismatches.append(
+                    {
+                        "sample": record.reference,
+                        "declared_sha256": record.file_sha256,
+                        "computed_sha256": digest,
+                    }
+                )
+        except OSError as exc:
+            unavailable.append({"sample": record.reference, "reason": f"could not hash image: {exc}"})
+
+    if len(fingerprints) == len(records):
+        status = "COMPLETE"
+    elif fingerprints:
+        status = "PARTIAL"
+    else:
+        status = "NOT_AVAILABLE"
+    return fingerprints, {
+        "algorithm": "sha256",
+        "status": status,
+        "fingerprinted_samples": len(fingerprints),
+        "unavailable_sample_count": len(unavailable),
+        "unavailable_samples": unavailable,
+        "declared_hash_mismatch_count": len(declared_mismatches),
+        "declared_hash_mismatches": declared_mismatches,
+        "note": (
+            "Exact file-content hashes are computed only for accessible image paths; "
+            "missing paths are reported and never replaced with assumed hashes."
+        ),
+    }
 
 
 def _near_duplicate_scan(
@@ -660,6 +817,8 @@ def _status_for_scope(
     records: Sequence[DatasetRecord],
     overlaps: Mapping[str, Sequence[Mapping[str, object]]],
     near_scan: Mapping[str, object],
+    model_training_lineage_status: str,
+    exact_file_hash_scan: Mapping[str, object],
 ) -> dict[str, object]:
     if target == "validation":
         required_splits = {"train", "validation"}
@@ -675,6 +834,13 @@ def _status_for_scope(
     missing_required = sorted(required_splits - present)
     if missing_required:
         reasons.append("Missing required split(s): " + ", ".join(missing_required) + ".")
+    if model_training_lineage_status != "PROVIDED":
+        lineage_reason = (
+            "Model-training lineage was not supplied."
+            if model_training_lineage_status == "MISSING"
+            else "Model-training lineage was supplied but contains no records."
+        )
+        reasons.append(f"{lineage_reason} Deployed-model training exposure cannot be verified.")
     missing_provenance = [
         record.reference
         for record in records
@@ -706,6 +872,19 @@ def _status_for_scope(
         reasons.append(f"Unresolved filename or perceptual-duplicate overlap in {len(candidate_only)} source group(s).")
     if near_scan.get("requested") and near_scan.get("status") != "COMPLETE":
         reasons.append("Requested near-duplicate scan did not complete for every available comparison.")
+    mismatch_samples = exact_file_hash_scan.get("declared_hash_mismatches", [])
+    if isinstance(mismatch_samples, Sequence) and not isinstance(mismatch_samples, (str, bytes)):
+        relevant_mismatches = [
+            mismatch
+            for mismatch in mismatch_samples
+            if isinstance(mismatch, Mapping)
+            and any(
+                record.reference == str(mismatch.get("sample", "")) and record.split in required_splits
+                for record in records
+            )
+        ]
+        if relevant_mismatches:
+            reasons.append(f"Declared file SHA-256 disagrees with accessible content for {len(relevant_mismatches)} relevant sample(s).")
 
     if confirmed:
         status = "FAIL"
@@ -719,6 +898,7 @@ def _status_for_scope(
         "missing_provenance_samples": missing_provenance,
         "confirmed_overlap_groups": len(confirmed),
         "unresolved_overlap_groups": len(candidate_only),
+        "model_training_lineage_status": model_training_lineage_status,
     }
 
 
@@ -752,18 +932,29 @@ def audit_dataset_independence(
 
     root = Path(image_root) if image_root is not None else None
     study_records = normalize_records(records, source_name="study", image_root=root)
-    lineage_records = (
-        normalize_records(
-            model_training_records,
-            source_name="model_training",
-            image_root=root,
-            forced_split="train",
-        )
-        if model_training_records is not None
-        else []
-    )
+    if model_training_records is None:
+        lineage_records: list[DatasetRecord] = []
+        model_training_lineage_status = "MISSING"
+    else:
+        # Materialize once so an explicitly empty iterator can be reported as
+        # incomplete lineage rather than silently becoming equivalent to a
+        # complete training record.  The study manifest itself remains
+        # untouched.
+        supplied_lineage_records = list(model_training_records)
+        if supplied_lineage_records:
+            lineage_records = normalize_records(
+                supplied_lineage_records,
+                source_name="model_training",
+                image_root=root,
+                forced_split="train",
+            )
+            model_training_lineage_status = "PROVIDED"
+        else:
+            lineage_records = []
+            model_training_lineage_status = "EMPTY"
     all_records = study_records + lineage_records
-    graph = _build_graph(all_records)
+    file_content_hashes, exact_file_hash_scan = _exact_file_hash_scan(all_records)
+    graph = _build_graph(all_records, file_content_hashes=file_content_hashes)
     near_scan = _near_duplicate_scan(
         all_records,
         enabled=near_duplicates,
@@ -785,9 +976,21 @@ def audit_dataset_independence(
     missing_provenance = [record.reference for record in all_records if not record.has_explicit_provenance]
     malformed = [record.reference for record in all_records if record.missing_sample_id or record.missing_split]
     validation = _status_for_scope(
-        target="validation", records=all_records, overlaps=overlaps, near_scan=near_scan
+        target="validation",
+        records=all_records,
+        overlaps=overlaps,
+        near_scan=near_scan,
+        model_training_lineage_status=model_training_lineage_status,
+        exact_file_hash_scan=exact_file_hash_scan,
     )
-    test = _status_for_scope(target="test", records=all_records, overlaps=overlaps, near_scan=near_scan)
+    test = _status_for_scope(
+        target="test",
+        records=all_records,
+        overlaps=overlaps,
+        near_scan=near_scan,
+        model_training_lineage_status=model_training_lineage_status,
+        exact_file_hash_scan=exact_file_hash_scan,
+    )
     certification = "PASS" if validation["status"] == "PASS" and test["status"] == "PASS" else "BLOCKED"
     if test["status"] == "PASS":
         required_label = "independent test performance"
@@ -796,16 +999,34 @@ def audit_dataset_independence(
     else:
         required_label = "development/compatibility result only"
 
+    study_manifest_sha256 = _manifest_sha256(manifest_path)
+    model_training_manifest_sha256 = _manifest_sha256(model_training_manifest_path)
+    normalized_study_records_sha256 = _records_sha256(study_records)
+
     return {
         "schema_version": 1,
         "audit_type": "DATASET_INDEPENDENCE_AUDIT",
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "inputs": {
             "study_manifest": str(manifest_path) if manifest_path is not None else None,
-            "study_manifest_sha256": _manifest_sha256(manifest_path),
+            "study_manifest_sha256": study_manifest_sha256,
             "model_training_manifest": str(model_training_manifest_path) if model_training_manifest_path is not None else None,
-            "model_training_manifest_sha256": _manifest_sha256(model_training_manifest_path),
+            "model_training_manifest_sha256": model_training_manifest_sha256,
             "model_lineage_included": bool(lineage_records),
+            "model_training_lineage_status": model_training_lineage_status,
+            "model_training_lineage_required_for_pass": True,
+        },
+        "evidence_binding": {
+            "algorithm": "sha256",
+            "audited_study_artifact_sha256": study_manifest_sha256 or normalized_study_records_sha256,
+            "audited_study_artifact_kind": "manifest_file" if study_manifest_sha256 else "normalized_records",
+            "study_manifest_sha256": study_manifest_sha256,
+            "normalized_study_records_sha256": normalized_study_records_sha256,
+            "note": (
+                "Bind a locked validation session to audited_study_artifact_sha256. "
+                "When a readable manifest path is supplied this is its byte hash; otherwise it is a "
+                "canonical hash of the normalized audited study records."
+            ),
         },
         "counts": {
             "samples": len(all_records),
@@ -842,6 +1063,8 @@ def audit_dataset_independence(
         "duplicates": {
             "duplicate_filenames_across_splits": _cross_split_token_payload(graph, token_prefix="filename:"),
             "identical_hashes_across_splits": _cross_split_token_payload(graph, token_prefix="sha256:"),
+            "identical_file_contents_across_splits": _cross_split_token_payload(graph, token_prefix="file_content_sha256:"),
+            "exact_file_hash_scan": exact_file_hash_scan,
             "near_duplicates": near_scan,
         },
         "independence": {
@@ -873,6 +1096,9 @@ def render_human_report(report: Mapping[str, object]) -> str:
     independence = report.get("independence", {}) if isinstance(report.get("independence"), Mapping) else {}
     provenance = report.get("provenance", {}) if isinstance(report.get("provenance"), Mapping) else {}
     duplicates = report.get("duplicates", {}) if isinstance(report.get("duplicates"), Mapping) else {}
+    inputs = report.get("inputs", {}) if isinstance(report.get("inputs"), Mapping) else {}
+    evidence_binding = report.get("evidence_binding", {}) if isinstance(report.get("evidence_binding"), Mapping) else {}
+    exact_scan = duplicates.get("exact_file_hash_scan", {}) if isinstance(duplicates.get("exact_file_hash_scan"), Mapping) else {}
     near_scan = duplicates.get("near_duplicates", {}) if isinstance(duplicates.get("near_duplicates"), Mapping) else {}
     near_status = str(near_scan.get("status") or "NOT_REPORTED")
     if near_status == "NOT_REQUESTED":
@@ -894,6 +1120,9 @@ def render_human_report(report: Mapping[str, object]) -> str:
         f"Train lineage-connected groups: {group_counts.get('train', 0)} (samples: {sample_counts.get('train', 0)})",
         f"Validation lineage-connected groups: {group_counts.get('validation', 0)} (samples: {sample_counts.get('validation', 0)})",
         f"Test lineage-connected groups: {group_counts.get('test', 0)} (samples: {sample_counts.get('test', 0)})",
+        f"Model-training lineage: {inputs.get('model_training_lineage_status', 'NOT_REPORTED')}",
+        f"Exact file-content hash scan: {exact_scan.get('status', 'NOT_REPORTED')} ({exact_scan.get('fingerprinted_samples', 0)} sample(s) fingerprinted)",
+        f"Audited study artifact SHA-256: {evidence_binding.get('audited_study_artifact_sha256', 'NOT_REPORTED')}",
         "",
     ]
     for key, label in (

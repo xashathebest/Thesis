@@ -123,6 +123,21 @@
               <div class="upload-results hidden" id="upload-results"><div class="mini-kpi"><span id="upload-count-label">Fish found</span><strong id="upload-fish-count">0</strong></div><div class="feature-counter-grid" id="upload-quality-counter-grid"></div></div>
             </section>
 
+            <section class="glass runtime-diagnostics" id="runtime-diagnostics" aria-label="Developer runtime diagnostics">
+              <div class="section-head compact"><div><p class="eyebrow">DEVELOPER ONLY</p><h2>Runtime diagnostics</h2></div><label class="switch-row"><span>Enable bounded debug capture</span><input id="debug-runtime-enabled" type="checkbox" /></label></div>
+              <p class="muted" id="runtime-diagnostics-note">Off by default. Debug artifacts never alter grading or production inspection history.</p>
+              <div class="machine-controls"><button class="button quiet" id="debug-pause-button" type="button" disabled>Pause on current frame</button></div>
+              <div class="camera-overlay-controls debug-overlay-controls" aria-label="Model 2 debug overlay controls">
+                <label><input id="debug-model2-raw" type="checkbox" /> <span>Model 2 raw boxes</span></label>
+                <label><input id="debug-model2-associated" type="checkbox" /> <span>Model 2 associated boxes</span></label>
+                <label><input id="debug-model2-rejected" type="checkbox" /> <span>Model 2 rejected / unassigned</span></label>
+                <label><input id="debug-model2-labels" type="checkbox" /> <span>Model 2 labels</span></label>
+                <label><input id="debug-roi-boundary" type="checkbox" /> <span>ROI boundary</span></label>
+              </div>
+              <dl class="settings-list" id="runtime-diagnostics-values"></dl>
+              <div class="feature-list"><h3>Saved Model 1 candidates</h3><div id="hard-negative-list">Enable diagnostics to create bounded research-only candidates.</div></div>
+            </section>
+
             <section class="kpi-section" aria-label="Session totals"><div class="section-head compact"><div><p class="eyebrow">SESSION TOTALS</p><h2>Inspection at a glance</h2></div><button class="text-button" id="open-confidence-button" type="button">Thresholds <strong id="threshold">—</strong></button></div><div class="kpi-grid" id="kpi-grid"></div></section>
 
             <section class="feature-section glass"><div class="section-head compact"><div><p class="eyebrow">DETECTED FEATURES</p><h2>Session feature signals</h2></div><span class="soft-badge">Model-backed only</span></div><div class="feature-counter-grid" id="feature-counter-grid"></div></section>

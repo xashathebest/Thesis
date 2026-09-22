@@ -31,12 +31,16 @@ const elements = {
   detectorModelName: $("detector-model-name"), detectorModelStatus: $("detector-model-status"), detectorCheckpoint: $("detector-checkpoint"), detectorDevice: $("detector-device"), detectorThreshold: $("detector-threshold"),
   segmenterModelName: $("segmenter-model-name"), segmenterModelStatus: $("segmenter-model-status"), segmenterCheckpoint: $("segmenter-checkpoint"), segmenterDevice: $("segmenter-device"), segmenterInference: $("segmenter-inference"),
   settingsResolution: $("settings-resolution"), settingsFps: $("settings-fps"), settingsQualityMode: $("settings-quality-mode"), settingsQualityInterval: $("settings-quality-interval"), settingsQualityRoiPadding: $("settings-quality-roi-padding"),
+  runtimeDiagnostics: $("runtime-diagnostics"), runtimeDiagnosticsNote: $("runtime-diagnostics-note"), runtimeDiagnosticsValues: $("runtime-diagnostics-values"), debugRuntimeEnabled: $("debug-runtime-enabled"), debugPause: $("debug-pause-button"), hardNegativeList: $("hard-negative-list"),
+  debugModel2Raw: $("debug-model2-raw"), debugModel2Associated: $("debug-model2-associated"), debugModel2Rejected: $("debug-model2-rejected"), debugModel2Labels: $("debug-model2-labels"), debugRoiBoundary: $("debug-roi-boundary"),
 };
 
 const overlayControls = {
   part_overlays: [$("toggle-part-overlays"), $("settings-part-overlays")], fish_ids: [$("toggle-fish-ids"), $("settings-fish-ids")],
   grades: [$("toggle-grades"), $("settings-grades")], confidence: [$("toggle-confidence"), $("settings-confidence")],
   features: [$("toggle-features"), $("settings-features")], outlines: [$("toggle-outlines"), $("settings-outlines")],
+  model2_raw_boxes: [$("debug-model2-raw")], model2_associated_boxes: [$("debug-model2-associated")],
+  model2_rejected_boxes: [$("debug-model2-rejected")], model2_labels: [$("debug-model2-labels")], roi_boundary: [$("debug-roi-boundary")],
 };
 const viewMeta = {
   live: ["Live Inspection", "Real-time Sardinella Lemuru quality inspection"],
@@ -281,10 +285,10 @@ function latestFeatureRows(event) {
   return ["Body", "Head", "Tail"].map((region) => {
     const part = partFor(event, region); const grade = part.grade; const stats = topStatistics(part);
     if (!part.present) return [region, `${partStatus(part)} (not marked physically missing)`, "unmeasured"];
-    const pieces = [`${partLabel(grade)} evidence ${scoreText(part.grade_confidence)}`, `original ${scoreText(part.original_weight ?? part.weight)}`, `effective ${scoreText(part.effective_weight ?? part.normalized_weight)}`];
-    const contribution = partContribution(part, eventValue(event, "provisional_grade", "best_evidence_class"));
-    if (contribution != null) pieces.push(`contribution ${scoreText(contribution)}`);
-    if (stats.number_of_valid_observations != null) pieces.push(`${stats.number_of_valid_observations} frames`);
+    const pieces = [`${partLabel(grade)} temporally aggregated part evidence: ${scoreText(part.grade_confidence)}`, `original weight: ${scoreText(part.original_weight ?? part.weight)}`];
+    const contribution = partContribution(part, grade);
+    if (contribution != null) pieces.push(`weighted contribution: ${scoreText(contribution)}`);
+    if (stats.number_of_valid_observations != null) pieces.push(`observed frames: ${stats.number_of_valid_observations}`);
     return [region, pieces.join(" | "), "detected"];
   });
 }
@@ -552,6 +556,47 @@ function renderModel(data) {
   elements.segmenterModelName.textContent = segmenter.name || "Quality Model"; elements.segmenterModelStatus.textContent = titleCase(segmenter.status); elements.segmenterCheckpoint.textContent = segmenter.checkpoint_resolved ? "Resolved" : "Unresolved"; elements.segmenterDevice.textContent = segmenter.device || "—"; elements.segmenterInference.textContent = diagnostic.last_inference_ms == null ? "No measurement" : `${diagnostic.last_inference_ms} ms`;
 }
 
+function diagnosticsRow(label, value) {
+  const row = document.createElement("div"); const term = document.createElement("dt"); const detail = document.createElement("dd");
+  term.textContent = label; detail.textContent = value == null || value === "" ? "—" : String(value); row.append(term, detail); return row;
+}
+function renderRuntimeDiagnostics(data) {
+  const diagnostics = data.runtime_diagnostics || {}; const performance = diagnostics.performance || {}; const timings = performance.timings || {}; const queue = diagnostics.frame_queue || {};
+  const enabled = Boolean(diagnostics.enabled); elements.debugRuntimeEnabled.checked = enabled; elements.debugPause.disabled = !enabled; elements.debugPause.textContent = diagnostics.paused ? "Resume inspection" : "Pause on current frame";
+  elements.runtimeDiagnosticsNote.textContent = enabled
+    ? "Debug mode is bounded and research-only. Raw candidates and saved crops do not change production predictions, grading, or history."
+    : "Off by default. Enable only while investigating Model 1 / Model 2 runtime behavior.";
+  elements.runtimeDiagnosticsValues.replaceChildren(
+    diagnosticsRow("Capture FPS", performance.calls_per_second?.camera_capture == null ? "—" : `${Number(performance.calls_per_second.camera_capture).toFixed(1)}`),
+    diagnosticsRow("Processing FPS", performance.calls_per_second?.processed_frame == null ? "—" : `${Number(performance.calls_per_second.processed_frame).toFixed(1)}`),
+    diagnosticsRow("Dropped stale frames", queue.dropped_frames ?? "—"), diagnosticsRow("Queue depth", queue.depth ?? "—"),
+    diagnosticsRow("Model 1 p50 / p95", timings.model1_inference?.p50 == null ? "—" : `${timings.model1_inference.p50} / ${timings.model1_inference.p95} ms`),
+    diagnosticsRow("Model 2 p50 / p95", timings.model2_inference?.p50 == null ? "—" : `${timings.model2_inference.p50} / ${timings.model2_inference.p95} ms`),
+    diagnosticsRow("JPEG p50 / p95", timings.jpeg_encoding?.p50 == null ? "—" : `${timings.jpeg_encoding.p50} / ${timings.jpeg_encoding.p95} ms`),
+    diagnosticsRow("Frontend render p50 / p95", timings.frontend_render?.p50 == null ? "Waiting for browser telemetry" : `${timings.frontend_render.p50} / ${timings.frontend_render.p95} ms`),
+    diagnosticsRow("Model 2 raw / associated / rejected / unassigned", `${diagnostics.model2_raw_candidates ?? 0} / ${diagnostics.model2_associated_parts ?? 0} / ${diagnostics.model2_rejected_candidates ?? 0} / ${diagnostics.model2_unassigned_candidates ?? 0}`),
+  );
+  elements.hardNegativeList.replaceChildren(); const records = Array.isArray(diagnostics.hard_negative_records) ? diagnostics.hard_negative_records : [];
+  if (!records.length) { elements.hardNegativeList.textContent = enabled ? "No bounded candidates saved yet." : "Enable diagnostics to create bounded research-only candidates."; return; }
+  records.slice(-8).reverse().forEach((record) => {
+    const row = document.createElement("div"); row.className = "verdict-summary-row";
+    const text = document.createElement("span"); text.textContent = `Frame ${record.frame_number} · Fish #${record.track_id} · detector ${formatPercent(Number(record.confidence) * 100)} · Model 2 compatible: ${record.model2_compatible_part_evidence ? "yes" : "no"}`;
+    row.append(text);
+    if (record.operator_label === "NOT_FISH") row.append(Object.assign(document.createElement("strong"), { textContent: "NOT_FISH" }));
+    else { const mark = document.createElement("button"); mark.className = "text-button"; mark.type = "button"; mark.textContent = "Mark NOT_FISH"; mark.addEventListener("click", () => markHardNegative(record.capture_id)); row.append(mark); }
+    elements.hardNegativeList.append(row);
+  });
+}
+async function postRuntimeDiagnostics(payload) {
+  try { const response = await fetch("/api/debug/runtime", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); const data = await response.json(); if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`); render(data); }
+  catch (error) { elements.alert.classList.remove("hidden"); elements.alertTitle.textContent = "Runtime diagnostics unavailable"; elements.alertCopy.textContent = "The debug action was not applied."; elements.alertDetails.textContent = error instanceof Error ? error.message : "Unknown error."; }
+}
+async function markHardNegative(captureId) {
+  if (!captureId) return;
+  try { const response = await fetch(`/api/debug/hard-negatives/${encodeURIComponent(String(captureId))}/not-fish`, { method: "POST" }); const data = await response.json(); if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`); await getStatus(); }
+  catch (error) { elements.alert.classList.remove("hidden"); elements.alertTitle.textContent = "NOT_FISH label not saved"; elements.alertCopy.textContent = "The production prediction was not changed."; elements.alertDetails.textContent = error instanceof Error ? error.message : "Unknown error."; }
+}
+
 function renderGradingSettings(data) {
   let section = $("grading-settings-section");
   if (!section) {
@@ -595,7 +640,8 @@ function syncSettings(data) {
 }
 
 function render(data) {
-  latestStatus = data; defaultConfidence = Number(data.default_confidence_threshold ?? defaultConfidence); defaultQualityConfidence = Number(data.default_quality_confidence_threshold ?? defaultQualityConfidence); renderAlert(data); renderCamera(data); renderLatest(data); renderKpis(data); renderFeatureCounters(data); renderAnalytics(data.analytics); renderRecent(data.recent_history); renderModel(data); syncSettings(data);
+  const renderStarted = performance.now(); latestStatus = data; defaultConfidence = Number(data.default_confidence_threshold ?? defaultConfidence); defaultQualityConfidence = Number(data.default_quality_confidence_threshold ?? defaultQualityConfidence); renderAlert(data); renderCamera(data); renderLatest(data); renderKpis(data); renderFeatureCounters(data); renderAnalytics(data.analytics); renderRecent(data.recent_history); renderModel(data); syncSettings(data); renderRuntimeDiagnostics(data);
+  if (data.runtime_diagnostics?.enabled) fetch("/api/debug/frontend-metrics", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ render_ms: performance.now() - renderStarted }) }).catch(() => {});
   if (selectedView === "history") loadHistory();
   else if (selectedView === "review") loadReviewQueue();
 }
@@ -863,6 +909,8 @@ elements.calibrationMode.addEventListener("change", () => postCameraSettings({ c
   });
 elements.slider.addEventListener("input", () => setConfidence(elements.slider.value)); elements.slider.addEventListener("change", () => setConfidence(elements.slider.value, true)); elements.confidenceMinus.addEventListener("click", () => setConfidence(Number(elements.slider.value) - 1, true)); elements.confidencePlus.addEventListener("click", () => setConfidence(Number(elements.slider.value) + 1, true)); elements.resetConfidence.addEventListener("click", () => setConfidence(defaultConfidence * 100, true));
 elements.qualitySlider.addEventListener("input", () => setQualityConfidence(elements.qualitySlider.value)); elements.qualitySlider.addEventListener("change", () => setQualityConfidence(elements.qualitySlider.value, true)); elements.qualityConfidenceMinus.addEventListener("click", () => setQualityConfidence(Number(elements.qualitySlider.value) - 1, true)); elements.qualityConfidencePlus.addEventListener("click", () => setQualityConfidence(Number(elements.qualitySlider.value) + 1, true)); elements.resetQualityConfidence.addEventListener("click", () => setQualityConfidence(defaultQualityConfidence * 100, true));
+elements.debugRuntimeEnabled.addEventListener("change", () => postRuntimeDiagnostics({ enabled: elements.debugRuntimeEnabled.checked }));
+elements.debugPause.addEventListener("click", () => postRuntimeDiagnostics({ paused: !Boolean(latestStatus?.runtime_diagnostics?.paused) }));
 Object.entries(overlayControls).forEach(([name, controls]) => controls.forEach((control) => control.addEventListener("change", () => setOverlay(name, control.checked))));
 document.querySelectorAll("input[name=export-range]").forEach((input) => input.addEventListener("change", () => { elements.dateRange.classList.toggle("hidden", document.querySelector("input[name=export-range]:checked").value !== "custom"); }));
 elements.exportForm.addEventListener("submit", async (event) => { event.preventDefault(); const button = $("confirm-export-button"); const fields = [...document.querySelectorAll(".export-fields input:checked")].map((input) => input.value); if (!fields.length) return; const payload = { format: document.querySelector("input[name=export-format]:checked").value, range: document.querySelector("input[name=export-range]:checked").value, fields, complete_analysis: true, start_date: elements.exportStartDate.value || null, end_date: elements.exportEndDate.value || null }; button.disabled = true; try { const response = await fetch("/api/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); if (!response.ok) { const error = await response.json(); throw new Error(error.detail || "Export failed."); } const blob = await response.blob(); const anchor = document.createElement("a"); const disposition = response.headers.get("content-disposition") || ""; const name = disposition.match(/filename="?([^";]+)"?/)?.[1] || `sardinella_inspection.${payload.format}`; anchor.href = URL.createObjectURL(blob); anchor.download = name; document.body.append(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(anchor.href); closeExport(); } catch (error) { elements.alert.classList.remove("hidden"); elements.alertTitle.textContent = "Export unavailable"; elements.alertCopy.textContent = "Inspection data could not be exported."; elements.alertDetails.textContent = error instanceof Error ? error.message : "Unknown export error."; } finally { button.disabled = false; } });

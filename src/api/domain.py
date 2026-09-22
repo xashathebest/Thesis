@@ -652,6 +652,13 @@ class InspectionState:
             "confidence": True,
             "features": False,
             "outlines": True,
+            # Developer-only Model 2 trace layers. They are inert until the
+            # runtime diagnostics endpoint explicitly enables debug capture.
+            "model2_raw_boxes": False,
+            "model2_associated_boxes": False,
+            "model2_rejected_boxes": False,
+            "model2_labels": False,
+            "roi_boundary": False,
         }
 
     def set_model(self, status: str, model_name: str | None, weights_path: str | None, message: str) -> None:

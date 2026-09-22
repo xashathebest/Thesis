@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
 
+from src.evaluation import validation_study
 from src.evaluation.validation_study import (
     FORMAL_FAILURE_CATEGORIES,
     ValidationStudyError,
@@ -25,7 +28,15 @@ from src.evaluation.validation_study import (
 )
 
 
-def make_locked_session(root: Path) -> tuple[dict[str, object], dict[str, object]]:
+def make_locked_session(
+    root: Path,
+    *,
+    intended_report_class: str = "DEVELOPMENT_VALIDATION",
+    validation_status: str = "PASS",
+    test_status: str = "PASS",
+    audit_manifest_hash: str | None = None,
+    include_audit_manifest_hash: bool = True,
+) -> tuple[dict[str, object], dict[str, object]]:
     """Create a fully described test-only formal session with no live models."""
 
     dataset_manifest = root / "split_manifest.csv"
@@ -42,6 +53,17 @@ def make_locked_session(root: Path) -> tuple[dict[str, object], dict[str, object
         "thresholds": {"model1": 0.5, "model2": 0.5},
         "weights": {"Body": 0.5, "Head": 0.3, "Tail": 0.2},
     }
+    audit: dict[str, object] = {
+        "independence": {
+            "validation": {"status": validation_status},
+            "test": {"status": test_status},
+        }
+    }
+    if include_audit_manifest_hash:
+        audit["inputs"] = {
+            "study_manifest_sha256": audit_manifest_hash
+            or hashlib.sha256(dataset_manifest.read_bytes()).hexdigest(),
+        }
     manifest = create_validation_session_manifest(
         study_id="locked-study-001",
         dataset_id="future-conveyor-test",
@@ -58,7 +80,8 @@ def make_locked_session(root: Path) -> tuple[dict[str, object], dict[str, object
             "locked": True,
             "operator_confirmation": {"confirmed": True},
         },
-        dataset_audit={"independent_validation": "PASS", "independent_test": "PASS"},
+        dataset_audit=audit,
+        intended_report_class=intended_report_class,
         sample_count=4,
         application_commit="abc123",
         working_tree_dirty=True,
@@ -150,7 +173,11 @@ class BlindGroundTruthTests(unittest.TestCase):
         prediction = {
             "final_grade": "Class B",
             "reason_codes": ["UG_TEMPORAL_PENDING"],
-            "analysis": {"part_results": {"Body": {"grade_evidence": {"Class B": 0.8}}}},
+            "analysis": {
+                "reason_codes": ["UG_MODEL2_UNAVAILABLE"],
+                "verdict_reason_code": "UG_INSUFFICIENT_EVIDENCE",
+                "part_results": {"Body": {"grade_evidence": {"Class B": 0.8}}},
+            },
         }
         truth = {
             "ground_truth_grade": "Class A",
@@ -178,6 +205,11 @@ class BlindGroundTruthTests(unittest.TestCase):
         self.assertEqual(row["camera_profile"]["profile_id"], "camera-profile-1")
         self.assertEqual(len(row["model_versions"]["model2"]["sha256"]), 64)
         self.assertEqual(len(row["configuration_version"]), 64)
+        self.assertEqual(
+            row["runtime_reason_codes"],
+            ["UG_TEMPORAL_PENDING", "UG_MODEL2_UNAVAILABLE", "UG_INSUFFICIENT_EVIDENCE"],
+        )
+        self.assertEqual(row["reason_codes"], row["runtime_reason_codes"])
         self.assertEqual(prediction["final_grade"], "Class B")
         self.assertNotIn("ground_truth_grade", prediction)
 
@@ -244,6 +276,115 @@ class SessionAndCertificationTests(unittest.TestCase):
         checked = verify_validation_session_manifest(draft)
         self.assertEqual(checked["status"], "FAIL")
         self.assertEqual(checked["action"], "TERMINATE_AND_START_NEW_SESSION")
+
+    def test_formal_session_uses_only_its_intended_audit_gate_and_binds_the_audit_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            independent, independent_config = make_locked_session(
+                root,
+                intended_report_class="INDEPENDENT_VALIDATION",
+                validation_status="PASS",
+                test_status="FAIL",
+            )
+            self.assertTrue(independent["study"]["session_locked"])
+            self.assertEqual(independent["study"]["intended_report_class"], "INDEPENDENT_VALIDATION")
+            self.assertEqual(independent["study"]["required_audit_gate"], "validation")
+            checks = independent["study"]["preconditions"]["checks"]
+            self.assertEqual(checks["independent_validation_audit"], "PASS")
+            self.assertNotIn("locked_test_audit", checks)
+            self.assertEqual(independent["dataset"]["audit_manifest_binding"]["status"], "PASS")
+            self.assertEqual(verify_validation_session_manifest(independent, configuration=independent_config)["status"], "PASS")
+
+            locked, locked_config = make_locked_session(
+                root,
+                intended_report_class="LOCKED_TEST",
+                validation_status="FAIL",
+                test_status="PASS",
+            )
+            self.assertTrue(locked["study"]["session_locked"])
+            self.assertEqual(locked["study"]["required_audit_gate"], "test")
+            locked_checks = locked["study"]["preconditions"]["checks"]
+            self.assertEqual(locked_checks["locked_test_audit"], "PASS")
+            self.assertNotIn("independent_validation_audit", locked_checks)
+            self.assertEqual(verify_validation_session_manifest(locked, configuration=locked_config)["status"], "PASS")
+
+            mismatched, _ = make_locked_session(
+                root,
+                intended_report_class="INDEPENDENT_VALIDATION",
+                audit_manifest_hash="f" * 64,
+            )
+            self.assertFalse(mismatched["study"]["session_locked"])
+            self.assertEqual(mismatched["dataset"]["audit_manifest_binding"]["status"], "FAIL")
+            self.assertIn("dataset_audit_manifest_binding", mismatched["study"]["preconditions"]["blockers"])
+
+            missing_binding, _ = make_locked_session(
+                root,
+                intended_report_class="LOCKED_TEST",
+                include_audit_manifest_hash=False,
+            )
+            self.assertFalse(missing_binding["study"]["session_locked"])
+            self.assertEqual(missing_binding["dataset"]["audit_manifest_binding"]["status"], "PENDING")
+
+    def test_per_fish_record_rejects_tampered_or_internally_invalid_locked_manifest(self) -> None:
+        prediction = {"final_grade": "Ungraded", "analysis": {"reason_codes": ["UG_LOW_CONFIDENCE"]}}
+        truth = {
+            "ground_truth_grade": "Class A",
+            "ground_truth_source": "independent expert",
+            "system_prediction_visible": False,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest, _ = make_locked_session(Path(temporary))
+            digest_tampered = copy.deepcopy(manifest)
+            digest_tampered["study"]["operator_notes"] = "changed after lock"
+            with self.assertRaisesRegex(ValidationStudyError, "manifest_integrity"):
+                build_study_record(
+                    study_sample_id="fish-1",
+                    session_id="session-1",
+                    system_fish_id="track-1",
+                    production_result=prediction,
+                    ground_truth=truth,
+                    session_manifest=digest_tampered,
+                )
+
+            internally_invalid = copy.deepcopy(manifest)
+            internally_invalid["study"]["preconditions"]["checks"]["model1_hash"] = "PENDING"
+            internally_invalid["manifest_sha256"] = validation_study._manifest_digest(internally_invalid)
+            with self.assertRaisesRegex(ValidationStudyError, "stored_precondition_model1_hash"):
+                build_study_record(
+                    study_sample_id="fish-2",
+                    session_id="session-1",
+                    system_fish_id="track-2",
+                    production_result=prediction,
+                    ground_truth=truth,
+                    session_manifest=internally_invalid,
+                )
+
+        # Per-fish provenance checks validate the frozen manifest itself; they
+        # do not require archived dataset/checkpoint files to remain mounted.
+        archived_row = build_study_record(
+            study_sample_id="fish-3",
+            session_id="session-1",
+            system_fish_id="track-3",
+            production_result=prediction,
+            ground_truth=truth,
+            session_manifest=manifest,
+        )
+        self.assertEqual(archived_row["runtime_reason_codes"], ["UG_LOW_CONFIDENCE"])
+
+    def test_summary_cannot_upgrade_a_session_to_another_independent_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            independent_session, _ = make_locked_session(
+                Path(temporary),
+                intended_report_class="INDEPENDENT_VALIDATION",
+                validation_status="PASS",
+                test_status="PASS",
+            )
+        summary = build_study_summary(
+            report_class="LOCKED_TEST",
+            session_manifest=independent_session,
+        )
+        self.assertEqual(summary["report_class"], "COMPATIBILITY_TEST")
+        self.assertIn("scoped for INDEPENDENT_VALIDATION", str(summary["reporting_guard"]["warning"]))
 
     def test_native_audit_and_camera_schemas_drive_readiness(self) -> None:
         actual_audit_shape = {
@@ -328,6 +469,11 @@ class SessionAndCertificationTests(unittest.TestCase):
         self.assertEqual(summary["ungraded_analysis"]["ungraded_count"], 2)
         self.assertEqual(summary["ungraded_analysis"]["denominator"], 5)
         self.assertIsNone(summary["model2_results"]["provenance"]["model_hash"])
+        self.assertIsNone(summary["model2_results"]["provenance"]["evaluation_timestamp"])
+        self.assertIn(
+            "Model 2 evaluation timestamp was not reported by the supplied source; this summary does not invent one.",
+            summary["known_limitations"],
+        )
 
 
 if __name__ == "__main__":

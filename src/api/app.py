@@ -10,7 +10,7 @@ from pathlib import Path
 import subprocess
 from contextlib import asynccontextmanager
 from datetime import datetime
-from time import sleep
+from time import monotonic, sleep
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -161,6 +161,34 @@ def _grading_snapshot() -> dict[str, object]:
     return dict(config) if isinstance(config, dict) else {}
 
 
+def _device_report() -> dict[str, object]:
+    """Report requested versus actually available compute without installing anything."""
+
+    try:
+        import torch
+
+        return {
+            "pytorch_cuda_available": bool(torch.cuda.is_available()),
+            "pytorch_cuda_version": torch.version.cuda,
+            "cuda_device_count": int(torch.cuda.device_count()) if torch.cuda.is_available() else 0,
+            "requested_model1_device": FISH_DETECTOR_DEVICE,
+            "requested_model2_device": FISH_QUALITY_DEVICE,
+            "model1_device": getattr(model, "device", "unresolved"),
+            "model2_device": getattr(quality_model, "device", "unresolved"),
+        }
+    except Exception as exc:
+        return {
+            "pytorch_cuda_available": False,
+            "pytorch_cuda_version": None,
+            "cuda_device_count": 0,
+            "requested_model1_device": FISH_DETECTOR_DEVICE,
+            "requested_model2_device": FISH_QUALITY_DEVICE,
+            "model1_device": getattr(model, "device", "unresolved"),
+            "model2_device": getattr(quality_model, "device", "unresolved"),
+            "device_probe_error": str(exc),
+        }
+
+
 def _session_metadata() -> dict[str, object]:
     """Create one JSON-safe reproducibility snapshot for a durable session."""
 
@@ -202,6 +230,7 @@ def _session_metadata() -> dict[str, object]:
             },
             "tracking": state.tracking.config.to_dict(),
             "preprocessing": {"automatic_image_adjustments": False},
+            "device_report": _device_report(),
         },
     }
 
@@ -270,6 +299,7 @@ async def lifespan(_: FastAPI):
     if upload_test_model is not None:
         # This preview-only model never participates in the production pipeline.
         upload_test_model.load()
+    LOGGER.info("[RUNTIME] device_report=%s", _device_report())
     try:
         yield
     finally:
@@ -488,6 +518,8 @@ def _status_payload() -> dict[str, object]:
         "roi_padding": service.quality_roi_padding,
         "quality_inference_mode": service.quality_inference_mode,
     })
+    snapshot["device_report"] = _device_report()
+    snapshot["runtime_diagnostics"] = service.runtime_diagnostics()
     # Retain the old response member for clients on a prior dashboard build.
     snapshot["model_info"]["segmenter"] = snapshot["model_info"]["quality"]
     quality_diagnostics = snapshot["model_info"]["quality"].get("diagnostics", {})
@@ -857,6 +889,57 @@ def get_settings() -> dict[str, object]:
     }
 
 
+@app.get("/api/debug/runtime")
+def get_runtime_diagnostics() -> dict[str, object]:
+    """Developer-only bounded runtime telemetry and artifact locations."""
+
+    return service.runtime_diagnostics()
+
+
+@app.post("/api/debug/runtime")
+async def update_runtime_diagnostics(request: Request) -> dict[str, object]:
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="Runtime diagnostics must be valid JSON.") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Runtime diagnostics must be a JSON object.")
+    try:
+        service.set_runtime_diagnostics(payload)
+    except CameraControlError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"updated": True, **_status_payload()}
+
+
+@app.post("/api/debug/frontend-metrics")
+async def record_frontend_metrics(request: Request) -> dict[str, object]:
+    """Receive a browser render duration; unavailable clients simply omit it."""
+
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="Frontend metrics must be valid JSON.") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Frontend metrics must be a JSON object.")
+    try:
+        milliseconds = float(payload.get("render_ms"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="render_ms must be a number.") from None
+    service.record_frontend_render(milliseconds)
+    return {"recorded": True}
+
+
+@app.post("/api/debug/hard-negatives/{capture_id}/not-fish")
+def mark_hard_negative_not_fish(capture_id: str) -> dict[str, object]:
+    """Apply an operator research label; never feed it into live inference."""
+
+    try:
+        record = service.mark_hard_negative(capture_id)
+    except CameraControlError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"updated": True, "record": record, "runtime_diagnostics": service.runtime_diagnostics()}
+
+
 @app.post("/api/settings")
 async def update_settings(request: Request) -> dict[str, object]:
     """Apply independent Model 1/Model 2 thresholds and live overlays."""
@@ -1024,7 +1107,11 @@ def _mjpeg_frames():
         frame, version = state.frame()
         if frame is not None and version != last_version:
             last_version = version
+            dispatch_started = monotonic()
             yield b"--frame\r\nContent-Type: image/jpeg\r\nCache-Control: no-cache\r\n\r\n" + frame + b"\r\n"
+            # This is stream-consumer pacing (the API uses MJPEG, not a
+            # WebSocket), not a claim of end-to-end browser paint time.
+            service.record_stream_dispatch(max(0.0, monotonic() - dispatch_started))
         sleep(0.025 if state.inspection_status == "running" else 0.2)
 
 

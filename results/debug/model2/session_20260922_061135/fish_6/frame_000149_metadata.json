@@ -1,0 +1,95 @@
+{
+  "fish_id": 6,
+  "frame_number": 149,
+  "letterbox": {
+    "padding": {
+      "bottom": 0,
+      "left": 178,
+      "right": 179,
+      "top": 0
+    },
+    "resize_method": "YOLO-compatible letterbox preview; model.predict performs the authoritative internal preprocessing",
+    "scale": 2.85714286
+  },
+  "model1_box": [
+    423.140380859375,
+    111.3104248046875,
+    521.4536743164062,
+    334.47271728515625
+  ],
+  "model2_confidence_threshold": 0.25,
+  "model2_input_dimensions": {
+    "height": 640,
+    "width": 640
+  },
+  "note": "This is a debug-only, bounded artifact. It is not inspection history and cannot alter a prediction.",
+  "padded_roi_box": [
+    423,
+    111,
+    522,
+    335
+  ],
+  "raw_detections": [
+    {
+      "bbox": [
+        31.798799514770508,
+        15.208572387695312,
+        63.39128112792969,
+        64.67152404785156
+      ],
+      "confidence": 0.004310660529881716,
+      "grade": "Class B",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 3,
+      "source_class_name": "Grade_B_Body"
+    },
+    {
+      "bbox": [
+        57.437992095947266,
+        160.7337188720703,
+        92.43718719482422,
+        218.18798828125
+      ],
+      "confidence": 0.0024354266934096813,
+      "grade": "Class B",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 3,
+      "source_class_name": "Grade_B_Body"
+    },
+    {
+      "bbox": [
+        57.437992095947266,
+        160.7337188720703,
+        92.43718719482422,
+        218.18798828125
+      ],
+      "confidence": 0.001521395519375801,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 6,
+      "source_class_name": "Grade_C_Body"
+    },
+    {
+      "bbox": [
+        17.645097732543945,
+        0.0,
+        71.81025695800781,
+        21.68364906311035
+      ],
+      "confidence": 0.0014031481696292758,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Tail",
+      "source_class_id": 8,
+      "source_class_name": "Grade_C_Tail"
+    }
+  ],
+  "roi_original_dimensions": {
+    "height": 224,
+    "width": 99
+  },
+  "selected_detections": []
+}

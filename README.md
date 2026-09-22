@@ -582,17 +582,22 @@ py -m src.evaluation.end_to_end_validation --manifest results\end_to_end_manifes
 payload from `evaluate_yolo_parts.py`; box and mask P/R/AP measurements are retained
 per source class, and any F1 derived from reported precision/recall is labeled as
 such. This assembler does not create AP, ground truth, or an accuracy claim from live
-inspection events.
+inspection events. Requests for `INDEPENDENT_VALIDATION` or `LOCKED_TEST` must
+also provide a verified session manifest whose `study.intended_report_class`
+exactly matches the requested label; independently entered fish truth must be
+explicitly blind to the system prediction.
 
 ## Independent conveyor-study workflow
 
 The research-only workflow in `src.evaluation` keeps future study evidence out of
-the production camera → detection → tracking → grading path. It does not tune a
+the production camera-to-detection-to-tracking-to-grading path. It does not tune a
 threshold, load a checkpoint, or change a grade.
 
 Audit every proposed study manifest against the deployed checkpoint's training
-lineage before calling it independent. The optional near-duplicate scan is a
-review aid only and needs resolvable image paths; it never moves or deletes data.
+lineage before calling it independent. Missing model-training lineage blocks a
+PASS. The audit binds its evidence to the exact manifest hash, and it computes
+exact content hashes where image paths are available. The optional near-duplicate
+scan is a review aid only and never moves or deletes data.
 
 ```powershell
 python -m src.evaluation.dataset_independence `
@@ -612,8 +617,12 @@ Before collection, complete the camera procedure in `camera/README.md`. Then cre
 a JSON input for `create-session` that includes the dataset manifest, both checkpoint
 paths/hashes, the saved camera profile, and the frozen configuration fields
 `grading_policy_version`, `thresholds`, `weights`, `model2_interval`, `roi_padding`,
-and `processing_resolution`. An incomplete input produces a **DRAFT**, not a locked
-study. If Git reports uncommitted changes, the input must explicitly set
+and `processing_resolution`. Set `intended_report_class` explicitly to
+`INDEPENDENT_VALIDATION` or `LOCKED_TEST` when preparing either claim; the session
+requires only its matching audit gate, but records that scope immutably. The native
+audit's manifest hash must match the frozen dataset manifest. An incomplete input
+produces a **DRAFT**, not a locked study. If Git reports uncommitted changes, the
+input must explicitly set
 `allow_dirty_worktree: true` to record the operator's decision to continue.
 
 ```powershell
@@ -639,9 +648,10 @@ python -m src.evaluation.validation_study study-summary `
 
 Its labels are `COMPATIBILITY TEST`, `DEVELOPMENT VALIDATION`, `INDEPENDENT
 VALIDATION`, and `LOCKED TEST`. The last two are automatically downgraded to
-compatibility wording unless the matching dataset-independence audit gate passes
-(and a valid locked session is supplied). Ungraded outcomes remain in the stated
-denominator and are reported separately rather than silently excluded.
+compatibility wording unless the matching dataset-independence audit gate passes,
+the audit is bound to the frozen manifest, and a valid locked session with the same
+intended scope is supplied. Ungraded outcomes remain in the stated denominator and
+are reported separately rather than silently excluded.
 
 Generate a read-only current checklist by passing the native audit JSON directly:
 
@@ -669,6 +679,31 @@ conveyor direction, and minimum detection confidence with labeled conveyor video
 There is not yet a locked independent end-to-end test using unseen physical fish and
 independent acquisition sessions; this repository does not claim final thesis
 accuracy.
+
+### Runtime diagnostic workflow
+
+The developer-only Runtime Diagnostics panel is off by default. When explicitly
+enabled it records bounded Model 1 geometry, Model 2 raw/selected/rejected boxes,
+the exact Model 1 ROI passed to Model 2, and latency distributions. It does not
+change detector thresholds, Model 2 evidence, weights, final-support policy, or
+inspection history. The one-slot capture hand-off discards stale frames rather than
+building a backlog; its counters are shown in the panel.
+
+Use **Mark NOT_FISH** only after an operator has reviewed a saved Model 1 crop.
+That creates research-only metadata under `results/hard_negatives/session_*/`; it
+never changes a current prediction or checkpoint. Prepare a future retraining set
+without retraining automatically:
+
+```powershell
+python -m src.preprocessing.catalog_hard_negatives `
+  --source results\hard_negatives `
+  --output results\hard_negatives\catalog_not_fish.csv
+```
+
+High-confidence non-fish detections are generally a Model 1 data/model failure
+mode. They require reviewed hard negatives and independent development validation;
+raising a live threshold is not a correction when the false positive is already
+high-confidence.
 
 ## 1. Audit the raw dataset
 

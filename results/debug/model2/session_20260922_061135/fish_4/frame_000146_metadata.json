@@ -1,0 +1,263 @@
+{
+  "fish_id": 4,
+  "frame_number": 146,
+  "letterbox": {
+    "padding": {
+      "bottom": 0,
+      "left": 162,
+      "right": 162,
+      "top": 0
+    },
+    "resize_method": "YOLO-compatible letterbox preview; model.predict performs the authoritative internal preprocessing",
+    "scale": 2.77056277
+  },
+  "model1_box": [
+    212.88409423828125,
+    82.08014678955078,
+    325.66912841796875,
+    312.0675048828125
+  ],
+  "model2_confidence_threshold": 0.25,
+  "model2_input_dimensions": {
+    "height": 640,
+    "width": 640
+  },
+  "note": "This is a debug-only, bounded artifact. It is not inspection history and cannot alter a prediction.",
+  "padded_roi_box": [
+    212,
+    82,
+    326,
+    313
+  ],
+  "raw_detections": [
+    {
+      "bbox": [
+        0.0,
+        167.18812561035156,
+        34.29800796508789,
+        223.31216430664062
+      ],
+      "confidence": 0.19925709068775177,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 6,
+      "source_class_name": "Grade_C_Body"
+    },
+    {
+      "bbox": [
+        7.591046333312988,
+        113.28938293457031,
+        46.48012924194336,
+        163.36279296875
+      ],
+      "confidence": 0.02271035872399807,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Tail",
+      "source_class_id": 8,
+      "source_class_name": "Grade_C_Tail"
+    },
+    {
+      "bbox": [
+        69.8503646850586,
+        176.82794189453125,
+        111.34092712402344,
+        231.0
+      ],
+      "confidence": 0.004914832301437855,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 6,
+      "source_class_name": "Grade_C_Body"
+    },
+    {
+      "bbox": [
+        0.0,
+        167.18812561035156,
+        34.29800796508789,
+        223.31216430664062
+      ],
+      "confidence": 0.004508551210165024,
+      "grade": "Class B",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 3,
+      "source_class_name": "Grade_B_Body"
+    },
+    {
+      "bbox": [
+        1.3526151180267334,
+        47.49222183227539,
+        44.665645599365234,
+        122.91707611083984
+      ],
+      "confidence": 0.0040885997004806995,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 6,
+      "source_class_name": "Grade_C_Body"
+    },
+    {
+      "bbox": [
+        0.0,
+        166.26087951660156,
+        35.46880340576172,
+        222.96505737304688
+      ],
+      "confidence": 0.0036204226780682802,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 6,
+      "source_class_name": "Grade_C_Body"
+    },
+    {
+      "bbox": [
+        0.0,
+        20.74437141418457,
+        29.474592208862305,
+        47.805633544921875
+      ],
+      "confidence": 0.0031478311866521835,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 6,
+      "source_class_name": "Grade_C_Body"
+    },
+    {
+      "bbox": [
+        9.978660583496094,
+        108.96573638916016,
+        46.80544662475586,
+        161.51136779785156
+      ],
+      "confidence": 0.0013866976369172335,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Tail",
+      "source_class_id": 8,
+      "source_class_name": "Grade_C_Tail"
+    },
+    {
+      "bbox": [
+        6.06957483291626,
+        115.76836395263672,
+        45.0118522644043,
+        163.66896057128906
+      ],
+      "confidence": 0.001329697435721755,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 6,
+      "source_class_name": "Grade_C_Body"
+    },
+    {
+      "bbox": [
+        0.0,
+        168.2003631591797,
+        32.380882263183594,
+        223.76400756835938
+      ],
+      "confidence": 0.0012543387711048126,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 6,
+      "source_class_name": "Grade_C_Body"
+    },
+    {
+      "bbox": [
+        19.47869300842285,
+        84.8536148071289,
+        47.32490921020508,
+        146.5675811767578
+      ],
+      "confidence": 0.001252274843864143,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Tail",
+      "source_class_id": 8,
+      "source_class_name": "Grade_C_Tail"
+    },
+    {
+      "bbox": [
+        0.0,
+        166.25311279296875,
+        35.32478713989258,
+        222.72474670410156
+      ],
+      "confidence": 0.001198320765979588,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Tail",
+      "source_class_id": 8,
+      "source_class_name": "Grade_C_Tail"
+    },
+    {
+      "bbox": [
+        68.7876968383789,
+        175.1671600341797,
+        111.83834075927734,
+        231.0
+      ],
+      "confidence": 0.001196641125716269,
+      "grade": "Rejected",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 9,
+      "source_class_name": "Rejected_Body"
+    },
+    {
+      "bbox": [
+        69.5865478515625,
+        190.02786254882812,
+        108.58746337890625,
+        231.0
+      ],
+      "confidence": 0.0010951630538329482,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 6,
+      "source_class_name": "Grade_C_Body"
+    },
+    {
+      "bbox": [
+        69.5865478515625,
+        190.02786254882812,
+        108.58746337890625,
+        231.0
+      ],
+      "confidence": 0.0010503868106752634,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Tail",
+      "source_class_id": 8,
+      "source_class_name": "Grade_C_Tail"
+    },
+    {
+      "bbox": [
+        69.53108215332031,
+        193.9871063232422,
+        107.07775115966797,
+        231.0
+      ],
+      "confidence": 0.0010433596326038241,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 6,
+      "source_class_name": "Grade_C_Body"
+    }
+  ],
+  "roi_original_dimensions": {
+    "height": 231,
+    "width": 114
+  },
+  "selected_detections": []
+}

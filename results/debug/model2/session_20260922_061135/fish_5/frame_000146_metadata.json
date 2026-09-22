@@ -1,0 +1,193 @@
+{
+  "fish_id": 5,
+  "frame_number": 146,
+  "letterbox": {
+    "padding": {
+      "bottom": 0,
+      "left": 195,
+      "right": 196,
+      "top": 0
+    },
+    "resize_method": "YOLO-compatible letterbox preview; model.predict performs the authoritative internal preprocessing",
+    "scale": 2.62295082
+  },
+  "model1_box": [
+    325.08197021484375,
+    104.6490478515625,
+    419.17901611328125,
+    347.62249755859375
+  ],
+  "model2_confidence_threshold": 0.25,
+  "model2_input_dimensions": {
+    "height": 640,
+    "width": 640
+  },
+  "note": "This is a debug-only, bounded artifact. It is not inspection history and cannot alter a prediction.",
+  "padded_roi_box": [
+    325,
+    104,
+    420,
+    348
+  ],
+  "raw_detections": [
+    {
+      "bbox": [
+        5.713129043579102,
+        199.65689086914062,
+        38.451263427734375,
+        244.0
+      ],
+      "confidence": 0.0462387315928936,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 6,
+      "source_class_name": "Grade_C_Body"
+    },
+    {
+      "bbox": [
+        11.115907669067383,
+        164.01004028320312,
+        55.63539123535156,
+        218.00518798828125
+      ],
+      "confidence": 0.03487321361899376,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 6,
+      "source_class_name": "Grade_C_Body"
+    },
+    {
+      "bbox": [
+        17.155868530273438,
+        138.61093139648438,
+        61.75624084472656,
+        173.52099609375
+      ],
+      "confidence": 0.03341411054134369,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 6,
+      "source_class_name": "Grade_C_Body"
+    },
+    {
+      "bbox": [
+        17.200910568237305,
+        90.1014175415039,
+        64.77880859375,
+        141.17921447753906
+      ],
+      "confidence": 0.005591823253780603,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 6,
+      "source_class_name": "Grade_C_Body"
+    },
+    {
+      "bbox": [
+        5.973354816436768,
+        198.44984436035156,
+        38.04995346069336,
+        244.0
+      ],
+      "confidence": 0.005447177216410637,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Tail",
+      "source_class_id": 8,
+      "source_class_name": "Grade_C_Tail"
+    },
+    {
+      "bbox": [
+        17.43212127685547,
+        138.71536254882812,
+        61.94437789916992,
+        168.72427368164062
+      ],
+      "confidence": 0.002564966445788741,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 6,
+      "source_class_name": "Grade_C_Body"
+    },
+    {
+      "bbox": [
+        17.24414825439453,
+        138.96762084960938,
+        62.798458099365234,
+        168.678955078125
+      ],
+      "confidence": 0.0022962528746575117,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 6,
+      "source_class_name": "Grade_C_Body"
+    },
+    {
+      "bbox": [
+        17.296894073486328,
+        138.62222290039062,
+        62.04818344116211,
+        167.36898803710938
+      ],
+      "confidence": 0.002092295791953802,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 6,
+      "source_class_name": "Grade_C_Body"
+    },
+    {
+      "bbox": [
+        11.115907669067383,
+        164.01004028320312,
+        55.63539123535156,
+        218.00518798828125
+      ],
+      "confidence": 0.0015682732919231057,
+      "grade": "Class B",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 3,
+      "source_class_name": "Grade_B_Body"
+    },
+    {
+      "bbox": [
+        5.713129043579102,
+        199.65689086914062,
+        38.451263427734375,
+        244.0
+      ],
+      "confidence": 0.0015120662283152342,
+      "grade": "Class B",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 3,
+      "source_class_name": "Grade_B_Body"
+    },
+    {
+      "bbox": [
+        13.302044868469238,
+        163.74972534179688,
+        55.82045364379883,
+        216.1529998779297
+      ],
+      "confidence": 0.0014945099828764796,
+      "grade": "Class C",
+      "mask": null,
+      "region": "Body",
+      "source_class_id": 6,
+      "source_class_name": "Grade_C_Body"
+    }
+  ],
+  "roi_original_dimensions": {
+    "height": 244,
+    "width": 95
+  },
+  "selected_detections": []
+}

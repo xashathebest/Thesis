@@ -17,7 +17,8 @@ They skip cleanly unless their documented local assets and environment variables
 are present. The normal GitHub Actions workflow runs only the model-free suite.
 
 `test_dataset_independence.py`, `test_camera_calibration.py`,
-`test_validation_study.py`, and `test_end_to_end_validation.py` also exercise the
+`test_camera_calibration_ui.py`, `test_validation_study.py`, and
+`test_end_to_end_validation.py` also exercise the
 research-only independent-study safeguards: lineage leakage, camera confirmation,
 locked manifests, blind truth, retained Ungraded outcomes, and performance-label
 gating. They do not run a checkpoint or certify a model.

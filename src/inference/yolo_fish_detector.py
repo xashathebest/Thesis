@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from importlib.util import find_spec
+import logging
 from pathlib import Path
 from threading import RLock
 from time import perf_counter
@@ -23,6 +24,7 @@ from src.inference.preprocessing import clamp_bbox, validate_image
 
 
 SUPPORTED_CHECKPOINT_SUFFIXES = (".pt", ".pth", ".ckpt")
+LOGGER = logging.getLogger(__name__)
 
 
 class YoloFishDetectorError(RuntimeError):
@@ -174,6 +176,7 @@ class YoloFishDetector:
         self.class_names: tuple[str, ...] = ()
         self.tracker_backend = "unresolved"
         self.last_inference_seconds: float | None = None
+        self.last_tracking_seconds: float | None = None
         self.checkpoint_sha256: str | None = None
         self._lock = RLock()
 
@@ -250,6 +253,13 @@ class YoloFishDetector:
         self.model, self._tracker, self.class_names, self.tracker_backend, self.error = model, tracker, labels, tracker_backend, None
         # Calculated once at successful startup, never once per camera frame.
         self.checkpoint_sha256 = shortened_sha256(self.model_path)
+        LOGGER.info(
+            "[MODEL 1] requested_device=%s resolved_device=%s class_mapping=%s tracker=%s",
+            self.requested_device,
+            self.device,
+            {index: name for index, name in enumerate(self.class_names)},
+            self.tracker_backend,
+        )
         return True
 
     @staticmethod
@@ -295,7 +305,9 @@ class YoloFishDetector:
         raw = self.detect(frame_bgr)
         try:
             with self._lock:
+                started = perf_counter()
                 tracks = self._tracker.update(_ByteTrackInput(raw), frame_bgr)
+                self.last_tracking_seconds = perf_counter() - started
         except Exception as exc:
             raise YoloFishDetectorInferenceError(f"Model 1 ByteTrack update failed: {exc}") from exc
         detections: list[Detection] = []
@@ -317,6 +329,9 @@ class YoloFishDetector:
             "device": self.device,
             "tracker": self.tracker_backend,
             "last_inference_ms": round(self.last_inference_seconds * 1000, 2) if self.last_inference_seconds is not None else None,
+            "last_tracking_ms": round(self.last_tracking_seconds * 1000, 2) if self.last_tracking_seconds is not None else None,
             "checkpoint_name": self.model_path.name if self.model_path else None,
             "checkpoint_sha256": self.checkpoint_sha256,
+            "requested_device": self.requested_device,
+            "class_mapping": {index: name for index, name in enumerate(self.class_names)},
         }

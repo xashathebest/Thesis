@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
+import json
 import logging
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ from typing import Any, Mapping
 from src.api.camera_controls import CameraControlError, CameraHardwareController
 from src.api.domain import InspectionState, QualitySummary
 from src.api.runtime import PART_PREVIEW_MODE, WHOLE_FISH_MODE
+from src.api.runtime_diagnostics import LatestFrameQueue, RuntimeDiagnostics
 from src.inference.association import ParentAnchor
 from src.inference.yolo_fish_detector import YoloFishDetector
 from src.inference.yolo_quality_model import MAX_QUALITY_ROI_PADDING, QUALITY_INFERENCE_MODES, FishQualityObservation, YoloQualityModel
@@ -75,6 +77,20 @@ class CameraInspectionService:
         self.quality_roi_padding = quality_roi_padding
         self.quality_inference_mode = quality_inference_mode
         self.debug_inference = os.getenv("LEMURU_DEBUG_INFERENCE", "false").strip().lower() in {"1", "true", "yes", "on"}
+        self.debug_enabled = os.getenv("LEMURU_RUNTIME_DIAGNOSTICS", "false").strip().lower() in {"1", "true", "yes", "on"}
+        self.debug_paused = False
+        self.debug_capture_limit = max(1, int(os.getenv("LEMURU_DEBUG_CAPTURE_LIMIT", "50")))
+        self._debug_capture_count = 0
+        self._debug_session = datetime.now().astimezone().strftime("session_%Y%m%d_%H%M%S")
+        self._debug_root = Path(__file__).resolve().parents[2] / "results" / "debug" / "model2" / self._debug_session
+        self._hard_negative_root = Path(__file__).resolve().parents[2] / "results" / "hard_negatives" / self._debug_session
+        self._hard_negative_records: dict[str, dict[str, object]] = {}
+        self._runtime_metrics = RuntimeDiagnostics()
+        self._latest_frames = LatestFrameQueue()
+        self._capture_thread: Thread | None = None
+        self._latest_part_overlays: dict[int, tuple[FishQualityObservation, CropBounds, int]] = {}
+        self._skipped_model2_reasons: dict[str, int] = {}
+        self._last_model1_debug: list[dict[str, object]] = []
         self._frame_index = 0
         self._last_segmented_frame: dict[int, int] = {}
         self._track_grades: dict[int, QualitySummary] = {}
@@ -99,6 +115,8 @@ class CameraInspectionService:
             else {}
         )
         self._image_statistics: dict[str, object] = {}
+        if isinstance(self.quality_model, YoloQualityModel):
+            self.quality_model.set_debug_raw_output(self.debug_enabled)
 
     def _clear_calibration_tracking(self) -> None:
         """Drop transient IDs so calibration frames can never become events."""
@@ -111,6 +129,8 @@ class CameraInspectionService:
             self._frame_index = 0
             self._last_segmented_frame.clear()
             self._track_grades.clear()
+            self._latest_part_overlays.clear()
+            self._latest_frames.clear()
             if self.quality_model is not None and hasattr(self.quality_model, "reset_tracks"):
                 self.quality_model.reset_tracks()
 
@@ -296,6 +316,211 @@ class CameraInspectionService:
             "profile": profile,
         }
 
+    def set_runtime_diagnostics(self, updates: Mapping[str, object]) -> dict[str, object]:
+        """Change debug-only capture/overlay controls without touching policy."""
+
+        allowed = {"enabled", "paused"}
+        unknown = set(updates) - allowed
+        if unknown:
+            raise CameraControlError(f"Unsupported runtime diagnostic setting(s): {', '.join(sorted(unknown))}.")
+        for name in allowed:
+            if name in updates and not isinstance(updates[name], bool):
+                raise CameraControlError(f"Runtime diagnostic {name} must be boolean.")
+        if "enabled" in updates:
+            self.debug_enabled = bool(updates["enabled"])
+            if isinstance(self.quality_model, YoloQualityModel):
+                self.quality_model.set_debug_raw_output(self.debug_enabled)
+        if "paused" in updates:
+            self.debug_paused = bool(updates["paused"])
+        return self.runtime_diagnostics()
+
+    def mark_hard_negative(self, capture_id: str) -> dict[str, object]:
+        """Operator-label a saved research crop without changing inference."""
+
+        record = self._hard_negative_records.get(capture_id)
+        if record is None:
+            raise CameraControlError("Hard-negative capture was not found in this debug session.")
+        record["operator_label"] = "NOT_FISH"
+        record["labelled_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        metadata_path = record.get("metadata_path")
+        if isinstance(metadata_path, str):
+            try:
+                Path(metadata_path).write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
+            except OSError as exc:
+                raise CameraControlError(f"Could not save NOT_FISH label: {exc}") from exc
+        return dict(record)
+
+    def runtime_diagnostics(self) -> dict[str, object]:
+        """Expose only bounded debug telemetry; it is never used for grading."""
+
+        raw_count = associated_count = rejected_count = unassigned_count = 0
+        for observation, _bounds, _frame_id in self._latest_part_overlays.values():
+            debug = observation.analysis.get("model2_debug") if isinstance(observation.analysis, Mapping) else None
+            if isinstance(debug, Mapping):
+                raw_count += len(debug.get("raw_detections", ())) if isinstance(debug.get("raw_detections"), list) else 0
+                associated_count += len(debug.get("selected_detections", ())) if isinstance(debug.get("selected_detections"), list) else 0
+                rejected_count += len(debug.get("rejected_detections", ())) if isinstance(debug.get("rejected_detections"), list) else 0
+                unassigned_count += len(debug.get("unassigned_detections", ())) if isinstance(debug.get("unassigned_detections"), list) else 0
+        return {
+            "enabled": self.debug_enabled,
+            "paused": self.debug_paused,
+            "debug_capture_limit": self.debug_capture_limit,
+            "debug_capture_count": self._debug_capture_count,
+            "model2_raw_candidates": raw_count,
+            "model2_associated_parts": associated_count,
+            "model2_rejected_candidates": rejected_count,
+            "model2_unassigned_candidates": unassigned_count,
+            "model1_detections": list(self._last_model1_debug),
+            "active_tracks": len(self.state.tracking.active_tracks()),
+            "skipped_model2_reasons": dict(self._skipped_model2_reasons),
+            "frame_queue": self._latest_frames.snapshot(),
+            "performance": self._runtime_metrics.snapshot(),
+            "hard_negative_records": list(self._hard_negative_records.values())[-20:],
+            "artifacts": {
+                "model2_directory": str(self._debug_root),
+                "hard_negative_directory": str(self._hard_negative_root),
+                "note": "Debug artifacts are bounded and never enter production inspection history or inference.",
+            },
+        }
+
+    def record_frontend_render(self, milliseconds: float) -> None:
+        """Accept a bounded browser render measurement for diagnostics only."""
+
+        if not self.debug_enabled or not 0.0 <= milliseconds <= 60_000.0:
+            return
+        self._runtime_metrics.record_latency("frontend_render", milliseconds / 1000.0)
+
+    def record_stream_dispatch(self, seconds: float) -> None:
+        """Record MJPEG generator pacing without claiming network completion."""
+
+        self._runtime_metrics.record_latency("mjpeg_dispatch", seconds)
+
+    def _record_model2_skip(self, reason: str) -> None:
+        self._skipped_model2_reasons[reason] = self._skipped_model2_reasons.get(reason, 0) + 1
+        self._runtime_metrics.increment(f"model2_skipped_{reason}")
+
+    @staticmethod
+    def _letterbox_preview(image: Any, image_size: int, cv2: Any) -> tuple[Any, dict[str, object]]:
+        """Create a documented visual approximation of YOLO's square input."""
+
+        height, width = image.shape[:2]
+        ratio = min(image_size / max(1, width), image_size / max(1, height))
+        resized_width, resized_height = max(1, round(width * ratio)), max(1, round(height * ratio))
+        resized = cv2.resize(image, (resized_width, resized_height), interpolation=cv2.INTER_LINEAR)
+        left = (image_size - resized_width) // 2
+        top = (image_size - resized_height) // 2
+        preview = cv2.copyMakeBorder(
+            resized,
+            top,
+            image_size - resized_height - top,
+            left,
+            image_size - resized_width - left,
+            cv2.BORDER_CONSTANT,
+            value=(114, 114, 114),
+        )
+        return preview, {
+            "resize_method": "YOLO-compatible letterbox preview; model.predict performs the authoritative internal preprocessing",
+            "scale": round(ratio, 8),
+            "padding": {"left": left, "top": top, "right": image_size - resized_width - left, "bottom": image_size - resized_height - top},
+        }
+
+    def _save_debug_artifacts(
+        self,
+        frame: Any,
+        crop: Any,
+        detection: Any,
+        bounds: CropBounds,
+        observation: FishQualityObservation,
+    ) -> None:
+        """Save a bounded, research-only record of an exact Model 2 input."""
+
+        if not self.debug_enabled or self._debug_capture_count >= self.debug_capture_limit:
+            return
+        try:
+            import cv2
+
+            directory = self._debug_root / f"fish_{int(detection.track_id)}"
+            directory.mkdir(parents=True, exist_ok=True)
+            token = f"frame_{self._frame_index:06d}"
+            original = frame.copy()
+            left, top, right, bottom = (int(round(value)) for value in detection.bbox)
+            cv2.rectangle(original, (left, top), (right, bottom), (0, 220, 255), 2)
+            cv2.putText(original, f"Fish #{detection.track_id}", (max(0, left), max(18, top - 5)), cv2.FONT_HERSHEY_SIMPLEX, .55, (0, 220, 255), 2, cv2.LINE_AA)
+            rendered = crop.copy()
+            debug = observation.analysis.get("model2_debug", {}) if isinstance(observation.analysis, Mapping) else {}
+            raw = debug.get("raw_detections", ()) if isinstance(debug, Mapping) else ()
+            for item in raw if isinstance(raw, list) else ():
+                bbox = item.get("bbox") if isinstance(item, Mapping) else None
+                if not isinstance(bbox, list) or len(bbox) != 4:
+                    continue
+                x1, y1, x2, y2 = (int(round(float(value))) for value in bbox)
+                cv2.rectangle(rendered, (x1, y1), (x2, y2), (255, 255, 0), 1)
+                cv2.putText(rendered, f"{item.get('source_class_name', 'part')} {float(item.get('confidence', 0)) * 100:.1f}%", (max(0, x1), max(13, y1 - 3)), cv2.FONT_HERSHEY_SIMPLEX, .38, (255, 255, 0), 1, cv2.LINE_AA)
+            model2_size = int(getattr(self.quality_model, "image_size", 640))
+            tensor_preview, letterbox = self._letterbox_preview(crop, model2_size, cv2)
+            cv2.imwrite(str(directory / f"{token}_original.jpg"), frame)
+            cv2.imwrite(str(directory / f"{token}_model1_box.jpg"), original)
+            cv2.imwrite(str(directory / f"{token}_roi.jpg"), crop)
+            cv2.imwrite(str(directory / f"{token}_model2_input_preview.jpg"), tensor_preview)
+            cv2.imwrite(str(directory / f"{token}_detections.jpg"), rendered)
+            metadata = {
+                "fish_id": int(detection.track_id),
+                "frame_number": self._frame_index,
+                "model1_box": list(detection.bbox),
+                "padded_roi_box": [bounds.x1, bounds.y1, bounds.x2, bounds.y2],
+                "roi_original_dimensions": {"width": bounds.width, "height": bounds.height},
+                "model2_input_dimensions": {"width": model2_size, "height": model2_size},
+                "model2_confidence_threshold": getattr(self.quality_model, "confidence_threshold", None),
+                "letterbox": letterbox,
+                "raw_detections": raw,
+                "selected_detections": debug.get("selected_detections", ()) if isinstance(debug, Mapping) else (),
+                "note": "This is a debug-only, bounded artifact. It is not inspection history and cannot alter a prediction.",
+            }
+            (directory / f"{token}_metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+            self._debug_capture_count += 1
+        except Exception as exc:  # Debug I/O must never stop the conveyor.
+            LOGGER.warning("[DEBUG] Could not save Model 2 artifact: %s", exc)
+
+    def _save_hard_negative_candidate(self, frame: Any, detection: Any, *, model2_compatible: bool) -> None:
+        """Retain an operator-labelable Model 1 crop for future research only."""
+
+        if not self.debug_enabled or self._debug_capture_count >= self.debug_capture_limit:
+            return
+        if detection.track_id is None:
+            return
+        try:
+            import cv2
+
+            crop, bounds = crop_fish(frame, detection.bbox, padding=0)
+            confidence = f"{float(detection.confidence):.3f}"
+            capture_id = f"frame_{self._frame_index:06d}_track_{int(detection.track_id)}_conf_{confidence}"
+            self._hard_negative_root.mkdir(parents=True, exist_ok=True)
+            image_path = self._hard_negative_root / f"{capture_id}.jpg"
+            metadata_path = self._hard_negative_root / f"{capture_id}.json"
+            metadata = {
+                "capture_id": capture_id,
+                "frame_number": self._frame_index,
+                "track_id": int(detection.track_id),
+                "confidence": float(detection.confidence),
+                "bbox": list(detection.bbox),
+                "width": bounds.width,
+                "height": bounds.height,
+                "aspect_ratio": round(bounds.width / bounds.height, 6) if bounds.height else None,
+                "area": bounds.width * bounds.height,
+                "model2_compatible_part_evidence": bool(model2_compatible),
+                "operator_label": None,
+                "image_path": str(image_path),
+                "metadata_path": str(metadata_path),
+                "research_only": True,
+                "note": "Set operator_label to NOT_FISH only after review. This record never feeds live inference.",
+            }
+            cv2.imwrite(str(image_path), crop)
+            metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+            self._hard_negative_records[capture_id] = metadata
+            self._debug_capture_count += 1
+        except Exception as exc:
+            LOGGER.warning("[DEBUG] Could not save hard-negative candidate: %s", exc)
+
     def start(self) -> bool:
         with self._lifecycle_lock:
             if self._thread is not None and self._thread.is_alive():
@@ -314,6 +539,8 @@ class CameraInspectionService:
             self._frame_index = 0
             self._last_segmented_frame.clear()
             self._track_grades.clear()
+            self._latest_part_overlays.clear()
+            self._latest_frames.clear()
             if not self.state.begin_start():
                 return False
             self._stop_event.clear()
@@ -348,6 +575,8 @@ class CameraInspectionService:
             self._frame_index = 0
             self._last_segmented_frame.clear()
             self._track_grades.clear()
+            self._latest_part_overlays.clear()
+            self._latest_frames.clear()
             if self.quality_model is not None and hasattr(self.quality_model, "reset_tracks"):
                 self.quality_model.reset_tracks()
             self.state.clear_transient_tracking()
@@ -360,6 +589,8 @@ class CameraInspectionService:
             self._frame_index = 0
             self._last_segmented_frame.clear()
             self._track_grades.clear()
+            self._latest_part_overlays.clear()
+            self._latest_frames.clear()
             if self.quality_model is not None and hasattr(self.quality_model, "reset_tracks"):
                 self.quality_model.reset_tracks()
             self.state.reset_session()
@@ -441,13 +672,43 @@ class CameraInspectionService:
             )
         return annotated
 
+    def _annotate_debug_parts(self, annotated: Any, items: object, crop_bounds: CropBounds, color: tuple[int, int, int], prefix: str, cv2: Any) -> None:
+        """Draw a debug-only Model 2 layer from serialized crop-local boxes."""
+
+        if not isinstance(items, list):
+            return
+        height, width = annotated.shape[:2]
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            bbox = item.get("bbox")
+            if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+                continue
+            translated = translate_bbox_to_frame(tuple(float(value) for value in bbox), crop_bounds, width, height)
+            if translated is None:
+                continue
+            left, top, right, bottom = (int(round(value)) for value in translated)
+            cv2.rectangle(annotated, (left, top), (right, bottom), color, 2)
+            if self.state.current_display_settings().get("model2_labels", False):
+                label = f"{prefix}: {item.get('region', '?')} {item.get('grade', '')} {float(item.get('confidence', 0.0)) * 100:.1f}%"
+                cv2.putText(annotated, label, (max(0, left), max(14, top - 4)), cv2.FONT_HERSHEY_SIMPLEX, .38, color, 1, cv2.LINE_AA)
+
     def _annotate_quality(self, annotated: Any, results: list[tuple[FishQualityObservation, CropBounds]], cv2: Any) -> Any:
-        """Overlay Model 2's actual part boxes on their originating Model 1 ROI."""
+        """Overlay Model 2 boxes and optional raw detector trace layers.
+
+        The production ``part_overlays`` switch now includes a visible box
+        boundary.  It is no longer silently dependent on the unrelated global
+        ``outlines`` switch, which was why enabled part overlays could look as
+        though they had disappeared in the live feed.
+        """
 
         colors = {"Class A": (76, 175, 80), "Class B": (255, 152, 0), "Class C": (170, 90, 205), "Rejected": (45, 45, 225)}
         height, width = annotated.shape[:2]
         display = self.state.current_display_settings()
         for result, crop_bounds in results:
+            if display.get("roi_boundary", False):
+                cv2.rectangle(annotated, (crop_bounds.x1, crop_bounds.y1), (crop_bounds.x2, crop_bounds.y2), (255, 255, 0), 1)
+                cv2.putText(annotated, "Model 2 ROI", (crop_bounds.x1, max(14, crop_bounds.y1 - 3)), cv2.FONT_HERSHEY_SIMPLEX, .38, (255, 255, 0), 1, cv2.LINE_AA)
             for part in result.parts:
                 part_grade = getattr(part, "grade", getattr(part, "quality", ""))
                 part_region = getattr(part, "region", getattr(part, "part", ""))
@@ -457,17 +718,27 @@ class CameraInspectionService:
                     left, top, right, bottom = translated
                     if display["part_overlays"]:
                         # Model 2 supplies a detection box, not a segmentation
-                        # mask. Tint its measured box without fabricating pixel
-                        # geometry for the fish part.
+                        # mask. Tint only the measured box and make its border
+                        # independently visible at live-video scale.
                         overlay = annotated.copy()
                         cv2.rectangle(overlay, (int(left), int(top)), (int(right), int(bottom)), color, -1)
                         cv2.addWeighted(overlay, 0.20, annotated, 0.80, 0, annotated)
-                    if display["outlines"]:
+                        cv2.rectangle(annotated, (int(left), int(top)), (int(right), int(bottom)), color, 2)
+                    elif display["outlines"]:
                         cv2.rectangle(annotated, (int(left), int(top)), (int(right), int(bottom)), color, 1)
                     if display["features"]:
                         grade_label = str(part_grade).replace("Class ", "")
                         label = f"{part_region} {grade_label}" if not display["confidence"] else f"{part_region} {grade_label} {part.confidence * 100:.0f}%"
                         cv2.putText(annotated, label, (max(0, int(left)), max(14, int(top) - 3)), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA)
+            debug = result.analysis.get("model2_debug") if isinstance(result.analysis, Mapping) else None
+            if self.debug_enabled and isinstance(debug, Mapping):
+                if display.get("model2_raw_boxes", False):
+                    self._annotate_debug_parts(annotated, debug.get("raw_detections"), crop_bounds, (0, 255, 255), "Raw", cv2)
+                if display.get("model2_associated_boxes", False):
+                    self._annotate_debug_parts(annotated, debug.get("selected_detections"), crop_bounds, (255, 255, 0), "Associated", cv2)
+                if display.get("model2_rejected_boxes", False):
+                    self._annotate_debug_parts(annotated, debug.get("rejected_detections"), crop_bounds, (0, 0, 255), "Rejected", cv2)
+                    self._annotate_debug_parts(annotated, debug.get("unassigned_detections"), crop_bounds, (0, 90, 255), "Unassigned", cv2)
         return annotated
 
     def _annotate_part_preview(self, frame: Any, detections: list[PartDetection], cv2: Any) -> Any:
@@ -584,6 +855,9 @@ class CameraInspectionService:
         crop_bounds: CropBounds,
         crop_shape: tuple[int, ...],
         fresh: list[tuple[FishQualityObservation, CropBounds]],
+        *,
+        frame: Any | None = None,
+        crop: Any | None = None,
     ) -> None:
         """Attach Model 1 provenance without changing Model 2 grade evidence."""
 
@@ -666,9 +940,33 @@ class CameraInspectionService:
         detector_seconds = getattr(self.model, "last_inference_seconds", None)
         performance["model1_inference_ms"] = round(float(detector_seconds) * 1000, 3) if detector_seconds is not None else None
         analysis["performance"] = performance
-        self._track_grades[detection.track_id] = replace(summary, analysis=analysis)
+        summarized = replace(summary, analysis=analysis)
+        self._track_grades[detection.track_id] = summarized
         self._last_segmented_frame[detection.track_id] = self._frame_index
-        fresh.append((result, crop_bounds))
+        overlay_observation = FishQualityObservation(
+            summarized.track_id,
+            summarized.quality,
+            summarized.quality_confidence,
+            tuple(result.parts),
+            dict(summarized.quality_votes),
+            dict(summarized.analysis),
+        )
+        self._latest_part_overlays[int(detection.track_id)] = (overlay_observation, crop_bounds, self._frame_index)
+        fresh.append((overlay_observation, crop_bounds))
+        diagnostics = analysis.get("model2_debug") if isinstance(analysis.get("model2_debug"), Mapping) else {}
+        raw = diagnostics.get("raw_detections", ()) if isinstance(diagnostics, Mapping) else ()
+        for item in raw if isinstance(raw, list) else ():
+            if isinstance(item, Mapping):
+                confidence = item.get("confidence")
+                region = item.get("region")
+                if isinstance(confidence, (float, int)) and isinstance(region, str):
+                    self._runtime_metrics.record_confidence(region, float(confidence))
+        self._runtime_metrics.record_latency("model2_inference", getattr(self.quality_model, "last_inference_seconds", None))
+        self._runtime_metrics.record_latency("grading_engine", getattr(self.quality_model, "last_grading_seconds", None))
+        self._runtime_metrics.record_latency("hsv", getattr(getattr(self.quality_model, "_grading_engine", None), "last_hsv_processing_seconds", None))
+        self._runtime_metrics.record_call("model2_roi")
+        if frame is not None and crop is not None:
+            self._save_debug_artifacts(frame, crop, detection, crop_bounds, overlay_observation)
 
     def process_frame(self, frame: Any, cv2: Any) -> Any:
         """Run the active mode for one frame; exposed for webcam-free tests."""
@@ -680,7 +978,27 @@ class CameraInspectionService:
             return self._annotate_part_preview(frame, detections, cv2)  # type: ignore[arg-type]
         processing_started = monotonic()
         detections = self.model.predict(frame)  # type: ignore[union-attr]
+        self._runtime_metrics.record_call("model1")
+        self._runtime_metrics.record_latency("model1_inference", getattr(self.model, "last_inference_seconds", None))
+        self._runtime_metrics.record_latency("tracker", getattr(self.model, "last_tracking_seconds", None))
         self._update_image_statistics(frame, detections, cv2)
+        if self.debug_enabled:
+            rows: list[dict[str, object]] = []
+            for detection in detections:
+                left, top, right, bottom = (float(value) for value in detection.bbox)
+                box_width, box_height = max(0.0, right - left), max(0.0, bottom - top)
+                rows.append({
+                    "track_id": detection.track_id,
+                    "confidence": detection.confidence,
+                    "bbox": list(detection.bbox),
+                    "width": round(box_width, 3),
+                    "height": round(box_height, 3),
+                    "aspect_ratio": round(box_width / box_height, 6) if box_height else None,
+                    "area": round(box_width * box_height, 3),
+                    "frame_number": self._frame_index + 1,
+                    "model2_compatible_part_evidence": False,
+                })
+            self._last_model1_debug = rows
         if self.calibration_mode():
             # Detection can stay visible while calibration is active, but no
             # model-2 evidence, tracker state, counters, history, exports, or
@@ -689,12 +1007,29 @@ class CameraInspectionService:
         frame_size = (frame.shape[1], frame.shape[0])
         self._frame_index += 1
         fresh: list[tuple[FishQualityObservation, CropBounds]] = []
-        eligible = [
-            detection
-            for detection in detections
-            if detection.track_id is not None
-            and (self._last_segmented_frame.get(detection.track_id) is None or self._frame_index - self._last_segmented_frame[detection.track_id] >= self.quality_interval)
-        ]
+        eligible: list[Any] = []
+        scheduled_track_ids: set[int] = set()
+        existing_tracks = {int(item["track_id"]): item for item in self.state.tracking.active_tracks() if item.get("track_id") is not None}
+        for detection in detections:
+            if detection.track_id is None:
+                self._record_model2_skip("untracked_detection")
+                continue
+            track_id = int(detection.track_id)
+            # The deployed local YOLO Model 2 finalizes a track's temporal
+            # evidence at the count line. Retained legacy adapters permit a
+            # documented late-grade compatibility path and are not the
+            # production two-YOLO runtime.
+            if bool(existing_tracks.get(track_id, {}).get("counted")) and isinstance(self.quality_model, YoloQualityModel):
+                self._record_model2_skip("finalized_track")
+                continue
+            if track_id in scheduled_track_ids:
+                self._record_model2_skip("duplicate_track_same_frame")
+                continue
+            if self._last_segmented_frame.get(track_id) is not None and self._frame_index - self._last_segmented_frame[track_id] < self.quality_interval:
+                self._record_model2_skip("interval_not_due")
+                continue
+            scheduled_track_ids.add(track_id)
+            eligible.append(detection)
         if self.quality_model is not None and eligible:
             try:
                 if isinstance(self.quality_model, YoloQualityModel) and self.quality_model.model is None:
@@ -702,7 +1037,9 @@ class CameraInspectionService:
                     # checkpoint is an abstention with UG_MODEL2_UNAVAILABLE,
                     # never a blank quality or fabricated part result.
                     for detection in eligible:
+                        roi_started = monotonic()
                         crop, bounds = crop_fish(frame, detection.bbox, padding=self.quality_roi_padding)
+                        self._runtime_metrics.record_latency("roi_extraction", monotonic() - roi_started)
                         result = self.quality_model.unavailable_observation(
                             crop,
                             int(detection.track_id),
@@ -711,16 +1048,21 @@ class CameraInspectionService:
                             parent_bbox=detection.bbox,
                             frame_shape=frame.shape,
                         )
-                        self._record_quality_observation(detection, result, bounds, crop.shape, fresh)
+                        self._record_quality_observation(detection, result, bounds, crop.shape, fresh, frame=frame, crop=crop)
                 elif self.quality_model.model is not None and isinstance(self.quality_model, YoloQualityModel) and self.quality_inference_mode == "full_frame":
                     parents = [ParentAnchor(int(item.track_id), item.bbox, item.confidence) for item in eligible]
                     full_frame_results = self.quality_model.predict_full_frame(frame, parents, frame_id=self._frame_index)
+                    self._runtime_metrics.record_call("model2")
+                    self._runtime_metrics.record_latency("model2_inference", self.quality_model.last_inference_seconds)
+                    self._runtime_metrics.record_latency("association", self.quality_model.last_association_seconds)
                     for detection in eligible:
                         result, bounds = full_frame_results[int(detection.track_id)]
                         self._record_quality_observation(detection, result, bounds, (bounds.height, bounds.width, frame.shape[2]), fresh)
                 elif self.quality_model.model is not None:
                     for detection in eligible:
+                        roi_started = monotonic()
                         crop, bounds = crop_fish(frame, detection.bbox, padding=self.quality_roi_padding)
+                        self._runtime_metrics.record_latency("roi_extraction", monotonic() - roi_started)
                         if self.debug_inference:
                             LOGGER.info(
                                 "[Model 1] Fish #%s confidence=%.2f%% bbox=%s -> Model 2 %s=%sx%s",
@@ -740,19 +1082,28 @@ class CameraInspectionService:
                                 parent_bbox=detection.bbox,
                                 frame_shape=frame.shape,
                             )
+                            self._runtime_metrics.record_call("model2")
                         else:
                             # Compatibility adapter path; production uses
                             # YoloQualityModel and the canonical policy.
                             result = self.quality_model.predict(crop, int(detection.track_id))
-                        self._record_quality_observation(detection, result, bounds, crop.shape, fresh)
+                        self._record_quality_observation(detection, result, bounds, crop.shape, fresh, frame=frame, crop=crop)
             except Exception as exc:
                 LOGGER.exception("Model 2 %s processing failed.", self.quality_inference_mode)
                 self.state.set_segmenter("error", self.quality_model.name, str(self.quality_model.weights_path), f"Quality Model inference failed: {exc}")
         active_ids = {detection.track_id for detection in detections if detection.track_id is not None}
         self._track_grades = {track_id: grade for track_id, grade in self._track_grades.items() if track_id in active_ids}
         self._last_segmented_frame = {track_id: seen for track_id, seen in self._last_segmented_frame.items() if track_id in active_ids}
+        self._latest_part_overlays = {track_id: overlay for track_id, overlay in self._latest_part_overlays.items() if track_id in active_ids}
         if self.quality_model is not None and hasattr(self.quality_model, "prune_tracks"):
             self.quality_model.prune_tracks(active_ids)
+        for detection in detections:
+            overlay = self._latest_part_overlays.get(int(detection.track_id)) if detection.track_id is not None else None
+            compatible = bool(overlay and overlay[0].parts)
+            self._save_hard_negative_candidate(frame, detection, model2_compatible=compatible)
+            for row in self._last_model1_debug:
+                if row.get("track_id") == detection.track_id:
+                    row["model2_compatible_part_evidence"] = compatible
         processing_time_ms = (monotonic() - processing_started) * 1000
         # Attach the full per-frame pipeline time before history/event creation.
         self._track_grades = {
@@ -792,7 +1143,15 @@ class CameraInspectionService:
                     # Representative crop saving is optional; never lose a
                     # count or AI result because it failed after finalization.
                     self.state.set_segmenter("error", self.quality_model.name, str(self.quality_model.weights_path), f"Best-frame finalization failed: {exc}")
-        return self._annotate_quality(self._annotate(frame, detections, cv2), fresh, cv2)
+        overlay_started = monotonic()
+        # Preserve the last real Model 2 boxes for each still-active track
+        # between scheduled Model 2 frames. Previously ``fresh`` made boxes
+        # vanish for the interval gap even when the UI control was enabled.
+        overlays = [(observation, bounds) for observation, bounds, _frame_id in self._latest_part_overlays.values()]
+        annotated = self._annotate_quality(self._annotate(frame, detections, cv2), overlays, cv2)
+        self._runtime_metrics.record_latency("overlay_rendering", monotonic() - overlay_started)
+        self._runtime_metrics.record_latency("total_processing", monotonic() - processing_started)
+        return annotated
 
     def _open_capture(self, cv2: Any) -> tuple[Any | None, str]:
         """Open one UVC capture, preferring DirectShow for Windows webcams."""
@@ -822,7 +1181,24 @@ class CameraInspectionService:
             LOGGER.warning("[CAMERA] %s could not open camera index %s", label, self.camera_index)
         return None, "Unavailable"
 
+    def _capture_frames(self, capture: Any) -> None:
+        """Keep reading the sole camera so inference never creates a backlog."""
+
+        while not self._stop_event.is_set():
+            capture_started = monotonic()
+            with self.camera_controls.lock:
+                ok, frame = capture.read()
+            self._runtime_metrics.record_latency("camera_capture", monotonic() - capture_started)
+            if not ok:
+                self.state.mark_error(f"Camera {self.camera_index} stopped returning frames.")
+                self._stop_event.set()
+                return
+            self._latest_frames.offer(frame, captured_at=monotonic())
+            self._runtime_metrics.record_call("camera_capture")
+
     def _run(self) -> None:
+        """Own setup/teardown while capture and inference exchange one frame."""
+
         capture = None
         try:
             import cv2
@@ -845,19 +1221,23 @@ class CameraInspectionService:
                 # error must never block raw acquisition or grading.
                 LOGGER.info("[CAMERA] Inspection profile was not applied: %s", exc)
             self.state.mark_running()
+            self._capture_thread = Thread(target=self._capture_frames, args=(capture,), name="camera-capture", daemon=True)
+            self._capture_thread.start()
             previous_time = monotonic()
             smoothed_fps = 0.0
             consecutive_processing_errors = 0
 
             while not self._stop_event.is_set():
-                with self.camera_controls.lock:
-                    ok, frame = capture.read()
-                if not ok:
-                    self.state.mark_error(f"Camera {self.camera_index} stopped returning frames.")
-                    return
+                packet = self._latest_frames.take(timeout=.1)
+                if packet is None:
+                    continue
+                if self.debug_paused:
+                    self._runtime_metrics.increment("paused_frames")
+                    continue
+                self._runtime_metrics.record_latency("capture_to_process", monotonic() - packet.captured_at)
                 try:
                     with self._processing_lock:
-                        annotated = self.process_frame(frame, cv2)
+                        annotated = self.process_frame(packet.frame, cv2)
                     consecutive_processing_errors = 0
                 except Exception as exc:
                     consecutive_processing_errors += 1
@@ -866,22 +1246,32 @@ class CameraInspectionService:
                     if consecutive_processing_errors >= 5:
                         activity = "Part-preview inference" if self.runtime_mode == PART_PREVIEW_MODE else "Fish detection/tracking"
                         self.state.mark_error(f"{activity} failed on five consecutive frames. Inspection stopped. Last error: {exc}")
+                        self._stop_event.set()
                         return
-                    annotated = frame
+                    annotated = packet.frame
+                encode_started = monotonic()
                 encoded, buffer = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 82])
+                self._runtime_metrics.record_latency("jpeg_encoding", monotonic() - encode_started)
                 if not encoded:
+                    self._runtime_metrics.increment("jpeg_encode_failures")
                     continue
                 now = monotonic()
                 instant_fps = 1.0 / max(now - previous_time, 1e-6)
                 smoothed_fps = instant_fps if smoothed_fps == 0 else (0.85 * smoothed_fps + 0.15 * instant_fps)
                 previous_time = now
+                self._runtime_metrics.record_call("processed_frame", when=now)
                 self.state.publish_frame(buffer.tobytes(), smoothed_fps)
         except Exception as exc:
             self.state.mark_error(f"Inspection failed: {exc}")
         finally:
+            self._stop_event.set()
+            capture_thread = self._capture_thread
+            if capture_thread is not None:
+                capture_thread.join(timeout=.5)
+            self._capture_thread = None
             if capture is not None:
                 self.camera_controls.detach(capture)
                 with self.camera_controls.lock:
                     capture.release()
-            if self._stop_event.is_set():
+            if self.state.snapshot()["inspection_status"] != "errored":
                 self.state.mark_stopped()

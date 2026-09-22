@@ -134,6 +134,27 @@ class CropAndTranslationTests(unittest.TestCase):
         self.assertFalse(translated[:2].any())
         self.assertFalse(translated[:, :4].any())
 
+    def test_roi_to_frame_transform_covers_edges_clipping_and_non_square_rois(self) -> None:
+        frame = np.zeros((100, 180, 3), dtype=np.uint8)
+        cases = {
+            "normal": (40, 25, 120, 70),
+            "left": (-8, 25, 30, 70),
+            "right": (150, 25, 190, 70),
+            "top": (40, -5, 120, 25),
+            "bottom": (40, 78, 120, 108),
+            "clipped_padding": (-4, -4, 16, 22),
+            "non_square": (20, 35, 160, 52),
+            "elongated": (75, 5, 92, 95),
+        }
+        for name, bbox in cases.items():
+            with self.subTest(name=name):
+                crop, bounds = crop_fish(frame, bbox, padding=7)
+                local = (0.0, 0.0, float(crop.shape[1]), float(crop.shape[0]))
+                self.assertEqual(
+                    translate_bbox_to_frame(local, bounds, frame.shape[1], frame.shape[0]),
+                    (float(bounds.x1), float(bounds.y1), float(bounds.x2), float(bounds.y2)),
+                )
+
     def test_mask_translation_clips_to_full_frame_bounds(self) -> None:
         # CropBounds normally comes from crop_fish() and is in bounds. This
         # defensive case proves rendering cannot escape a source image anyway.

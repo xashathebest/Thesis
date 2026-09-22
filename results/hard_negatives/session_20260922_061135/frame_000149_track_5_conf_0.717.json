@@ -1,0 +1,22 @@
+{
+  "area": 26429,
+  "aspect_ratio": 0.433198,
+  "bbox": [
+    317.5915222167969,
+    101.85489654541016,
+    423.6745300292969,
+    347.8463439941406
+  ],
+  "capture_id": "frame_000149_track_5_conf_0.717",
+  "confidence": 0.7167336344718933,
+  "frame_number": 149,
+  "height": 247,
+  "image_path": "C:\\Users\\User\\Downloads\\Thesis\\sardinella-lemuru-ml\\results\\hard_negatives\\session_20260922_061135\\frame_000149_track_5_conf_0.717.jpg",
+  "metadata_path": "C:\\Users\\User\\Downloads\\Thesis\\sardinella-lemuru-ml\\results\\hard_negatives\\session_20260922_061135\\frame_000149_track_5_conf_0.717.json",
+  "model2_compatible_part_evidence": false,
+  "note": "Set operator_label to NOT_FISH only after review. This record never feeds live inference.",
+  "operator_label": null,
+  "research_only": true,
+  "track_id": 5,
+  "width": 107
+}

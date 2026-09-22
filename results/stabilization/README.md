@@ -1,6 +1,6 @@
 # Stabilization execution record
 
-**Status: BLOCKED — runtime checks passed, but scientific system validation is incomplete.**
+**Status: BLOCKED - runtime checks passed, but scientific system validation is incomplete.**
 
 This directory contains a reproducible compatibility result, not a release
 certification or a basis for threshold tuning.
@@ -52,17 +52,20 @@ from the retained canonical split manifest plus the deployed checkpoint's
 `training_manifest.csv`. They are non-destructive provenance checks, not model
 evaluation runs.
 
-- Train ↔ validation: **39 lineage-connected source groups** overlap.
-- Train ↔ test: **38 lineage-connected source groups** overlap.
+- Train <-> validation: **39 lineage-connected source groups** overlap.
+- Train <-> test: **38 lineage-connected source groups** overlap.
 - Independent validation: **FAIL**.
 - Independent test: **FAIL**.
 - Final performance certification: **BLOCKED**.
 
 The group counts are lineage-connected components, not a claim that all 869
 training components are native physical-fish IDs. The audit preserves direct
-hash/origin/source evidence for review. Its optional near-duplicate image scan
-was **not requested** for this retained run, so it must not be reported as
-completed.
+hash/origin/source evidence for review, records the supplied model-training
+lineage as **PROVIDED**, and binds this run to canonical split-manifest SHA-256
+`5067a3d28e78d119c59bdb560939dfbc41f425451f09cfb0d862e07887f2226f`.
+Its exact file-content scan was **NOT_AVAILABLE** because retained image paths
+were unavailable. The requested near-duplicate scan was **INCOMPLETE** for the
+same reason; neither check must be reported as completed.
 
 `validation_readiness.json` consumes that native audit directly. It records:
 
@@ -72,8 +75,8 @@ completed.
 - Model 1, Model 2, association, tracking, and end-to-end study: **PENDING**;
 - final certification: **BLOCKED**.
 
-After adding the research-only readiness safeguards, the current full model-free
-regression suite completed with **265 tests passed and 3 skipped**. This verifies
+After the latest research-only readiness hardening, the current full model-free
+regression suite completed with **276 tests passed and 3 skipped**. This verifies
 software behavior only; it does not change the scientific blocks above.
 
 ## Validation stages still blocked

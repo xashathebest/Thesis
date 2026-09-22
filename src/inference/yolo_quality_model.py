@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
+import os
 from pathlib import Path
 from threading import RLock
 from time import perf_counter
@@ -24,6 +26,7 @@ from src.preprocessing.dataset_utils import project_root
 SUPPORTED_CHECKPOINT_SUFFIXES = (".pt", ".pth", ".ckpt")
 QUALITY_INFERENCE_MODES = ("crop", "full_frame")
 MAX_QUALITY_ROI_PADDING = 4096  # operational bound, not a selected scientific value
+LOGGER = logging.getLogger(__name__)
 
 
 class YoloQualityModelError(RuntimeError):
@@ -157,6 +160,10 @@ class YoloQualityModel:
         self.class_names: dict[int, str] = {}
         self.last_inference_seconds: float | None = None
         self.last_grading_seconds: float | None = None
+        self.last_association_seconds: float | None = None
+        self.last_raw_parts: tuple[PartDetection, ...] = ()
+        self.last_selected_parts: tuple[PartDetection, ...] = ()
+        self.debug_raw_output = os.getenv("LEMURU_RUNTIME_DIAGNOSTICS", "false").strip().lower() in {"1", "true", "yes", "on"}
         self.checkpoint_sha256: str | None = None
         self._lock = RLock()
 
@@ -224,6 +231,12 @@ class YoloQualityModel:
         self.model, self.class_names, self.error = model, mapping, None
         # Hash once after successful initialization for reproducible sessions.
         self.checkpoint_sha256 = shortened_sha256(self.model_path)
+        LOGGER.info(
+            "[MODEL 2] requested_device=%s resolved_device=%s class_mapping=%s",
+            self.requested_device,
+            self.device,
+            self.class_names,
+        )
         return True
 
     @staticmethod
@@ -246,21 +259,35 @@ class YoloQualityModel:
                 parts.append(PartDetection.from_source_class(class_id, confidence, bounded))
         return parts
 
-    def _infer_parts(self, image: np.ndarray) -> list[PartDetection]:
-        """Run exactly one Model 2 detector call and retain real boxes only."""
+    def set_debug_raw_output(self, enabled: bool) -> None:
+        """Expose low-confidence detector output only for an explicit debug run."""
+
+        self.debug_raw_output = bool(enabled)
+
+    def _infer_parts(self, image: np.ndarray) -> tuple[list[PartDetection], list[PartDetection]]:
+        """Run exactly one Model 2 detector call and separate raw/selected boxes.
+
+        Normal operation still supplies the configured production confidence to
+        YOLO.  Diagnostic mode requests a low detector floor solely to expose
+        candidates that were rejected before grading; grading continues to use
+        the unchanged configured threshold.
+        """
 
         height, width = image.shape[:2]
         with self._lock:
             started = perf_counter()
             results = self.model.predict(  # type: ignore[union-attr]
                 source=image,
-                conf=self.confidence_threshold,
+                conf=0.001 if self.debug_raw_output else self.confidence_threshold,
                 imgsz=self.image_size,
                 device=self.device,
                 verbose=False,
             )
             self.last_inference_seconds = perf_counter() - started
-        return self._part_detections(results[0], width, height, self.confidence_threshold) if results else []
+        raw = self._part_detections(results[0], width, height, 0.001 if self.debug_raw_output else self.confidence_threshold) if results else []
+        selected = [part for part in raw if part.confidence >= self.confidence_threshold]
+        self.last_raw_parts, self.last_selected_parts = tuple(raw), tuple(selected)
+        return selected, raw
 
     def _grade_parts(
         self,
@@ -362,7 +389,38 @@ class YoloQualityModel:
             "model2_available": model2_available,
         }
         analysis["model2_available"] = model2_available
-        analysis["quality_inference"] = dict(inference_metadata)
+        # Raw PartDetection objects are retained below as JSON-safe debug
+        # payloads; do not leak Python objects into durable history metadata.
+        analysis["quality_inference"] = {
+            key: value for key, value in inference_metadata.items()
+            if key not in {"raw_detections", "selected_detections", "unassigned_detections"}
+        }
+        raw_detections = inference_metadata.get("raw_detections", ())
+        selected_detections = inference_metadata.get("selected_detections", ())
+        if isinstance(raw_detections, Sequence) and not isinstance(raw_detections, (str, bytes)):
+            raw_payload = [item.to_dict() if isinstance(item, PartDetection) else dict(item) for item in raw_detections if isinstance(item, (PartDetection, Mapping))]
+            selected_payload = [item.to_dict() if isinstance(item, PartDetection) else dict(item) for item in selected_detections if isinstance(item, (PartDetection, Mapping))]
+            selected_keys = {
+                (item.get("source_class_id"), tuple(item.get("bbox", ())), item.get("confidence"))
+                for item in selected_payload
+            }
+            analysis["model2_debug"] = {
+                "raw_detections": raw_payload,
+                "selected_detections": selected_payload,
+                "rejected_detections": [
+                    item for item in raw_payload
+                    if (item.get("source_class_id"), tuple(item.get("bbox", ())), item.get("confidence")) not in selected_keys
+                ],
+                "selection_threshold": self.confidence_threshold,
+                "coordinate_space": "crop_local" if inference_metadata.get("mode") == "crop" else "full_frame_then_crop_local",
+            }
+            unassigned = inference_metadata.get("unassigned_detections", ())
+            if isinstance(unassigned, Sequence) and not isinstance(unassigned, (str, bytes)):
+                analysis["model2_debug"]["unassigned_detections"] = [
+                    item.to_dict() if isinstance(item, PartDetection) else dict(item)
+                    for item in unassigned
+                    if isinstance(item, (PartDetection, Mapping))
+                ]
         return FishQualityObservation(track_id, verdict.final_grade, verdict.final_score, tuple(parts), votes, analysis)
 
     def predict(
@@ -383,7 +441,7 @@ class YoloQualityModel:
             raise YoloQualityModelInferenceError(self.error or "Model 2 is not loaded.")
         try:
             crop = validate_image(crop_bgr, name="Fish ROI")
-            parts = self._infer_parts(crop)
+            parts, raw_parts = self._infer_parts(crop)
             return self._grade_parts(
                 crop,
                 track_id,
@@ -394,7 +452,14 @@ class YoloQualityModel:
                 detection_confidence=detection_confidence,
                 parent_bbox=parent_bbox,
                 frame_shape=frame_shape,
-                inference_metadata={"mode": "crop", "roi_padding": self.roi_padding},
+                inference_metadata={
+                    "mode": "crop",
+                    "roi_padding": self.roi_padding,
+                    "raw_detections": raw_parts,
+                    "selected_detections": parts,
+                    "model2_input_size": [self.image_size, self.image_size],
+                    "resize_method": "Ultralytics letterbox inside model.predict",
+                },
             )
         except YoloQualityModelInferenceError:
             raise
@@ -470,15 +535,28 @@ class YoloQualityModel:
             raise YoloQualityModelInferenceError(self.error or "Model 2 is not loaded.")
         try:
             frame = validate_image(frame_bgr, name="Quality full frame")
-            frame_parts = self._infer_parts(frame)
+            frame_parts, raw_parts = self._infer_parts(frame)
+            association_started = perf_counter()
             associations = associate_parts_to_parents(frame_parts, parents)
+            self.last_association_seconds = perf_counter() - association_started
             results: dict[int, tuple[FishQualityObservation, CropBounds]] = {}
             for parent in parents:
                 crop, bounds = crop_fish(frame, parent.bbox, padding=self.roi_padding)
+                raw_crop_parts = [
+                    translated
+                    for part in raw_parts
+                    if (translated := self._part_to_crop(part, bounds.origin, crop.shape)) is not None
+                ]
                 assigned_parts = [
                     translated
                     for item in associations
                     if item.status == "ASSIGNED" and item.track_id == parent.track_id
+                    if (translated := self._part_to_crop(item.part, bounds.origin, crop.shape)) is not None
+                ]
+                unassigned_parts = [
+                    translated
+                    for item in associations
+                    if item.status != "ASSIGNED"
                     if (translated := self._part_to_crop(item.part, bounds.origin, crop.shape)) is not None
                 ]
                 summary = association_summary(associations, parent.track_id)
@@ -501,6 +579,11 @@ class YoloQualityModel:
                         "crop_bounds": [bounds.x1, bounds.y1, bounds.x2, bounds.y2],
                         "padding_hit_frame_limits": bounds.x1 == 0 or bounds.y1 == 0 or bounds.x2 == frame.shape[1] or bounds.y2 == frame.shape[0],
                         "association": summary,
+                        "raw_detections": raw_crop_parts,
+                        "selected_detections": assigned_parts,
+                        "unassigned_detections": unassigned_parts,
+                        "model2_input_size": [self.image_size, self.image_size],
+                        "resize_method": "Ultralytics letterbox inside model.predict",
                     },
                 )
                 results[parent.track_id] = (observation, bounds)
@@ -582,6 +665,7 @@ class YoloQualityModel:
             "device": self.device,
             "last_inference_ms": round(self.last_inference_seconds * 1000, 2) if self.last_inference_seconds is not None else None,
             "last_grading_ms": round(self.last_grading_seconds * 1000, 2) if self.last_grading_seconds is not None else None,
+            "last_association_ms": round(self.last_association_seconds * 1000, 2) if self.last_association_seconds is not None else None,
             "last_hsv_processing_ms": (
                 round(self._grading_engine.last_hsv_processing_seconds * 1000, 2)
                 if self._grading_engine.last_hsv_processing_seconds is not None else None
@@ -590,6 +674,11 @@ class YoloQualityModel:
             "checkpoint_sha256": self.checkpoint_sha256,
             "quality_inference_mode": self.quality_inference_mode,
             "roi_padding": self.roi_padding,
+            "requested_device": self.requested_device,
+            "class_mapping": dict(self.class_names),
+            "debug_raw_output": self.debug_raw_output,
+            "last_raw_candidate_count": len(self.last_raw_parts),
+            "last_selected_candidate_count": len(self.last_selected_parts),
             "grading_config": self._grading_engine.config.to_dict(),
             "frame_quality_config": self._frame_quality_config.to_dict(),
             "best_frame_tracks": len(self._best_frame_selector._best_by_track),
