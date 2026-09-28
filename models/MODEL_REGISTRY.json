@@ -1,0 +1,56 @@
+﻿{
+  "registry_version": "1.0",
+  "description": "Tamban system model registry. SHA-256 values are computed from the actual checkpoint bytes. Record these alongside any finalized session export for reproducibility.",
+  "note": "The active runtime (Model 1 + Model 2) uses models/fish_detector/weights and models/fish_quality/weights. The yolov26 and yolo_parts entries are alternative/experimental checkpoints not in the live inference path.",
+  "models": [
+    {
+      "role": "Model 1 — whole-fish parent detector (active runtime)",
+      "name": "model1_fish_parent_detector.pt",
+      "path": "models/fish_detector/weights/model1_fish_parent_detector.pt",
+      "sha256": "87498c748ceceb6ae2198b3216cff79471d08648133e704317bdf25cb3abd60a",
+      "size_bytes": 20338245,
+      "architecture": "YOLO detection (Ultralytics)",
+      "task": "detect",
+      "classes": 1,
+      "class_names": {"0": "item"},
+      "semantic_class": "Fish (whole-fish parent detector; label stored as item in checkpoint)",
+      "env_var": "FISH_DETECTOR_MODEL_PATH",
+      "default_conf": 0.5,
+      "notes": "Single-class detector. Class label is item in the checkpoint but treated as Fish by the runtime semantic contract."
+    },
+    {
+      "role": "Model 2 — 12-class part quality detector (active runtime)",
+      "name": "last.pt",
+      "path": "models/fish_quality/weights/last.pt",
+      "sha256": "9b5e48ae228705ae956b74f7371d364688a584cc03a98e8b86478194431c7e61",
+      "size_bytes": 40293359,
+      "architecture": "YOLO detection (Ultralytics)",
+      "task": "detect",
+      "classes": 12,
+      "class_names": {"0":"Grade_A_Body","1":"Grade_A_Head","2":"Grade_A_Tail","3":"Grade_B_Body","4":"Grade_B_Head","5":"Grade_B_Tail","6":"Grade_C_Body","7":"Grade_C_Head","8":"Grade_C_Tail","9":"Rejected_Body","10":"Rejected_Head","11":"Rejected_Tail"},
+      "env_var": "FISH_QUALITY_MODEL_PATH",
+      "default_conf": 0.25,
+      "notes": "12-class part detection model. Evidence aggregated by region and grade per frame; not a per-fish classifier."
+    },
+    {
+      "role": "Model 2 alternative — YOLOv26m part detector (not in active runtime)",
+      "name": "model2_tamban_yolo26m_partdet_r03_devbest.pt",
+      "path": "models/yolov26/model2_tamban_yolo26m_partdet_r03_devbest.pt",
+      "sha256": "f74cd336b6ba9274f3bbbad845f64d03d0d4cc78e79cf1c0392d0b07d1d53222",
+      "size_bytes": 44082329,
+      "architecture": "YOLOv26-M (Ultralytics)",
+      "task": "detect",
+      "notes": "Experimental larger checkpoint from Tamban training round 03. Set FISH_QUALITY_MODEL_PATH to test against last.pt."
+    },
+    {
+      "role": "Part preview segmentation model (upload-test / part-preview mode only)",
+      "name": "exp-4.pt",
+      "path": "models/yolo_parts/yolo26n_seg_exp4/weights/exp-4.pt",
+      "sha256": "c29bef8666967c89bc99639c279ae29df9e6cc2855541920fd88e7614f460d1c",
+      "size_bytes": 6561181,
+      "architecture": "YOLO segmentation (Ultralytics)",
+      "task": "segment",
+      "notes": "Used only in LEMURU_MODE=part_preview for research upload analysis. Not used in live fish grading."
+    }
+  ]
+}
