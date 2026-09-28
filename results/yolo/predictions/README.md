@@ -1,1 +1,0 @@
-No trained predictions available. Successful evaluation writes ALL 115 held-out images (green ground truth, red predictions), including failures. Whole-fish counts and overlap scenario tags need human review.
