@@ -1,196 +1,1000 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#f5f7fb" />
-    <title>Sardinella Lemuru | Live Inspection</title>
-    <link rel="stylesheet" href="/assets/styles.css" />
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#FFFFFF">
+    <title>Tamban | Fish Inspection System</title>
+    <link rel="stylesheet" href="/assets/styles.css">
   </head>
   <body>
+    <svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <defs>
+        <symbol id="icon-fish" viewBox="0 0 24 24">
+          <path d="M3 12s4-7 10-7c4 0 7 7 7 7s-3 7-7 7C7 19 3 12 3 12Z"></path>
+          <path d="m3 12-2-4v8l2-4M12 5l-2 5m2 9-2-5"></path>
+          <circle cx="16" cy="11" r=".8"></circle>
+        </symbol>
+        <symbol id="icon-camera" viewBox="0 0 24 24">
+          <rect x="3" y="6" width="18" height="14" rx="2"></rect>
+          <path d="m8 6 2-3h4l2 3"></path>
+          <circle cx="12" cy="13" r="4"></circle>
+        </symbol>
+        <symbol id="icon-history" viewBox="0 0 24 24">
+          <path d="M3 11a9 9 0 1 1 2 7M3 4v7h7m2-4v5l3 2"></path>
+        </symbol>
+        <symbol id="icon-review" viewBox="0 0 24 24">
+          <path d="M9 3h6l1 3h3v15H5V6h3l1-3Z"></path>
+          <path d="M9 3v4h6V3m-6 11 2 2 4-4"></path>
+        </symbol>
+        <symbol id="icon-model" viewBox="0 0 24 24">
+          <path d="m12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5"></path>
+        </symbol>
+        <symbol id="icon-chart" viewBox="0 0 24 24">
+          <path d="M4 3v17h17M8 16v-4m5 4V8m5 8V5"></path>
+        </symbol>
+        <symbol id="icon-export" viewBox="0 0 24 24">
+          <path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5"></path>
+        </symbol>
+        <symbol id="icon-settings" viewBox="0 0 24 24">
+          <path d="M4 6h16M4 12h16M4 18h16"></path>
+          <path d="M8 3v6m8 0v6M9 15v6"></path>
+        </symbol>
+      </defs>
+    </svg>
+    <a class="skip-link" href="#main-content">Skip to inspection workspace</a>
     <div class="app-shell" id="app-shell">
-      <aside class="sidebar glass" aria-label="Primary navigation">
+      <aside class="sidebar surface" aria-label="Primary navigation">
         <div class="sidebar-top">
           <div class="brand-row">
-            <div class="brand-mark" aria-hidden="true">SL</div>
-            <div class="brand-copy"><strong>Sardinella</strong><span>Lemuru AI</span></div>
-            <button class="icon-button sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Collapse sidebar" data-tooltip="Collapse sidebar">‹</button>
+            <div class="brand-mark" aria-hidden="true">
+              <svg class="icon" aria-hidden="true" viewBox="0 0 24 24">
+                <use href="#icon-fish"></use>
+              </svg>
+            </div>
+            <div class="brand-copy">
+              <strong>TAMBAN</strong>
+              <span>INSPECTION SYSTEM</span>
+            </div>
+            <button class="icon-button sidebar-toggle" id="sidebar-toggle" type="button" aria-label="Collapse sidebar" data-tooltip="Collapse sidebar" aria-expanded="true" aria-controls="sidebar-navigation">‹</button>
           </div>
-          <nav class="navigation">
-            <button class="nav-item" type="button" data-view="review" data-tooltip="Review Queue"><span aria-hidden="true">!</span><b>Review Queue</b></button>
-            <button class="nav-item active" type="button" data-view="live" data-tooltip="Live Inspection"><span aria-hidden="true">◉</span><b>Live Inspection</b></button>
-            <button class="nav-item" type="button" data-anchor="analytics-section" data-tooltip="Analytics"><span aria-hidden="true">◌</span><b>Analytics</b></button>
-            <button class="nav-item" type="button" data-view="history" data-tooltip="Inspection History"><span aria-hidden="true">☷</span><b>Inspection History</b></button>
-            <button class="nav-item" type="button" id="sidebar-export" data-tooltip="Export"><span aria-hidden="true">⇩</span><b>Export</b></button>
-            <button class="nav-item" type="button" data-view="model" data-tooltip="Model"><span aria-hidden="true">◇</span><b>Model</b></button>
+          <p class="nav-section-label">WORKSPACE</p>
+          <nav class="navigation" id="sidebar-navigation" aria-label="Workspace">
+            <button class="nav-item active" type="button" data-view="live" data-tooltip="Live Inspection" aria-label="Live Inspection" aria-current="page">
+              <span aria-hidden="true">
+                <svg class="icon" aria-hidden="true" viewBox="0 0 24 24">
+                  <use href="#icon-camera"></use>
+                </svg>
+              </span>
+              <b>Live Inspection</b>
+            </button>
+            <button class="nav-item" type="button" data-view="history" data-tooltip="Inspection History" aria-label="Inspection History">
+              <span aria-hidden="true">
+                <svg class="icon" aria-hidden="true" viewBox="0 0 24 24">
+                  <use href="#icon-history"></use>
+                </svg>
+              </span>
+              <b>Inspection History</b>
+            </button>
+            <button class="nav-item" type="button" data-view="review" data-tooltip="Review Queue" aria-label="Review Queue">
+              <span aria-hidden="true">
+                <svg class="icon" aria-hidden="true" viewBox="0 0 24 24">
+                  <use href="#icon-review"></use>
+                </svg>
+              </span>
+              <b>Review Queue</b>
+              <span class="nav-count hidden" id="review-count" aria-label="Fish awaiting review"></span>
+            </button>
+            <button class="nav-item" type="button" data-view="model" data-tooltip="Model" aria-label="Model">
+              <span aria-hidden="true">
+                <svg class="icon" aria-hidden="true" viewBox="0 0 24 24">
+                  <use href="#icon-model"></use>
+                </svg>
+              </span>
+              <b>Model</b>
+            </button>
+            <button class="nav-item nav-secondary" type="button" data-anchor="analytics-section" data-tooltip="Analytics" aria-label="Analytics">
+              <span aria-hidden="true">
+                <svg class="icon" aria-hidden="true" viewBox="0 0 24 24">
+                  <use href="#icon-chart"></use>
+                </svg>
+              </span>
+              <b>Analytics</b>
+            </button>
+            <button class="nav-item nav-secondary" type="button" id="sidebar-export" data-tooltip="Export" aria-label="Export">
+              <span aria-hidden="true">
+                <svg class="icon" aria-hidden="true" viewBox="0 0 24 24">
+                  <use href="#icon-export"></use>
+                </svg>
+              </span>
+              <b>Export</b>
+            </button>
           </nav>
         </div>
         <div class="sidebar-bottom">
-          <button class="nav-item" type="button" id="sidebar-settings" data-tooltip="Settings"><span aria-hidden="true">⚙</span><b>Settings</b></button>
-          <div class="sidebar-health"><i></i><span>Local system</span></div>
+          <p class="nav-section-label">GENERAL</p>
+          <button class="nav-item" type="button" id="sidebar-settings" data-tooltip="Settings">
+            <svg class="icon" aria-hidden="true" viewBox="0 0 24 24">
+              <use href="#icon-settings"></use>
+            </svg>
+            <b>Settings</b>
+          </button>
+          <div class="sidebar-health">
+            <span>LOCAL INFERENCE</span>
+            <small>Sardinella lemuru</small>
+          </div>
         </div>
       </aside>
-
       <div class="app-main">
-        <header class="app-header glass">
+        <header class="app-header surface">
           <div class="page-heading">
-            <p class="eyebrow">OPERATIONS</p>
+            <p class="eyebrow">TAMBAN · FISH INSPECTION SYSTEM</p>
             <h1 id="page-title">Live Inspection</h1>
-            <p id="page-subtitle">Real-time Sardinella Lemuru quality inspection</p>
+            <p id="page-subtitle">Sardinella lemuru quality inspection</p>
           </div>
           <div class="header-actions">
             <div class="status-cluster" aria-label="Runtime status">
-              <span class="compact-status neutral" id="camera-pill"><i></i><b>Camera</b><em>Disconnected</em></span>
-              <span class="compact-status neutral" id="model-pill"><i></i><b>AI Model</b><em>Checking</em></span>
-              <span class="compact-status neutral device-pill" id="device-pill"><i></i><b>Device</b><em>—</em></span>
+              <span class="compact-status neutral" id="connection-pill">
+                <i></i>
+                <b>Server</b>
+                <em>Connecting</em>
+              </span>
+              <span class="compact-status neutral" id="camera-pill">
+                <i></i>
+                <b>Camera</b>
+                <em>Disconnected</em>
+              </span>
+              <span class="compact-status neutral" id="model-pill">
+                <i></i>
+                <b>AI Model</b>
+                <em>Checking</em>
+              </span>
+              <span class="compact-status neutral device-pill" id="device-pill">
+                <i></i>
+                <b>Device</b>
+                <em>—</em>
+              </span>
             </div>
-            <button class="button quiet" id="export-button" type="button">Export</button>
-            <button class="icon-button" id="settings-button" type="button" aria-label="Open settings" data-tooltip="Settings">⚙</button>
+          </div>
+          <span class="mode-label" id="runtime-mode-label">Checking runtime</span>
+          <div class="header-tools">
+            <button class="button quiet" id="export-button" type="button" aria-label="Export inspection data">
+              <svg class="icon" aria-hidden="true" viewBox="0 0 24 24">
+                <use href="#icon-export"></use>
+              </svg>
+              <span>Export</span>
+            </button>
+            <button class="icon-button" id="settings-button" type="button" aria-label="Open settings" data-tooltip="Settings">
+              <svg class="icon" aria-hidden="true" viewBox="0 0 24 24">
+                <use href="#icon-settings"></use>
+              </svg>
+            </button>
           </div>
         </header>
-
-        <main class="content" id="main-content">
-          <section class="notice hidden" id="alert" role="status">
-            <div><strong id="alert-title">AI model unavailable</strong><p id="alert-copy">Model checkpoint could not be loaded.</p></div>
-            <details><summary>Details</summary><p id="alert-details"></p></details>
+        <main class="content" id="main-content" tabindex="-1">
+          <section class="preview-banner hidden" id="part-preview-banner" role="status">
+            <strong>PART MODEL PREVIEW</strong>
+            <p>Research preview only — fish counting and final grading are disabled.</p>
           </section>
-
+          <section class="notice hidden" id="alert" role="status" aria-live="polite" aria-atomic="true">
+            <div>
+              <strong id="alert-title">AI model unavailable</strong>
+              <p id="alert-copy">Model checkpoint could not be loaded.</p>
+            </div>
+            <details>
+              <summary>Details</summary>
+              <p id="alert-details"></p>
+            </details>
+          </section>
           <section class="view live-view" id="view-live" aria-label="Live inspection workspace">
             <section class="inspection-grid">
-              <article class="camera-card glass">
+              <article class="camera-card surface">
                 <div class="camera-head">
-                  <div><p class="eyebrow">CAMERA</p><h2>Inspection feed</h2></div>
-                  <button class="camera-settings-trigger" id="camera-settings-button" type="button" aria-label="Open camera calibration"><span aria-hidden="true">⚙</span> Camera</button>
-                  <div class="camera-readout"><span class="live-badge neutral" id="live-badge">OFFLINE</span><span id="feed-fps">0.0 FPS</span><span id="feed-resolution">—</span></div>
+                  <div>
+                    <p class="eyebrow">CAMERA</p>
+                    <h2>Inspection feed</h2>
+                  </div>
+                  <div class="camera-readout">
+                    <span class="live-badge neutral" id="live-badge">OFFLINE</span>
+                    <span id="feed-fps">0.0 FPS</span>
+                    <span id="feed-resolution">—</span>
+                  </div>
+                  <button class="camera-settings-trigger" id="camera-settings-button" type="button" aria-label="Open camera calibration">
+                    <svg class="icon" aria-hidden="true" viewBox="0 0 24 24">
+                      <use href="#icon-settings"></use>
+                    </svg>
+                    Camera settings
+                  </button>
                 </div>
                 <div class="video-stage">
-                  <img id="video-feed" alt="Annotated local webcam feed" />
+                  <img id="video-feed" alt="Annotated local webcam feed">
                   <div class="video-placeholder" id="video-placeholder">
-                    <span class="camera-glyph" aria-hidden="true">◉</span>
-                    <strong id="placeholder-title">Camera disconnected</strong>
-                    <p id="placeholder-copy">Connect or start the inspection camera to begin real-time analysis.</p>
-                    <button class="button primary" id="empty-start-button" type="button">Start inspection</button>
-                  </div>
-                  <div class="camera-overlay-controls" aria-label="Camera overlay controls">
-                    <label><input id="toggle-part-overlays" type="checkbox" /> <span>Part overlays</span></label>
-                    <label><input id="toggle-fish-ids" type="checkbox" checked /> <span>Fish IDs</span></label>
-                    <label><input id="toggle-grades" type="checkbox" checked /> <span>Grades</span></label>
-                    <label><input id="toggle-confidence" type="checkbox" checked /> <span>Detector / support</span></label>
-                    <label><input id="toggle-features" type="checkbox" /> <span>Part labels</span></label>
-                    <label><input id="toggle-outlines" type="checkbox" checked /> <span>Outlines</span></label>
+                    <span class="camera-glyph" aria-hidden="true">
+                      <svg class="icon" aria-hidden="true" viewBox="0 0 24 24">
+                        <use href="#icon-camera"></use>
+                      </svg>
+                    </span>
+                    <strong id="placeholder-title">Camera is currently stopped.</strong>
+                    <p id="placeholder-copy">Start inspection to connect the camera and view live fish evidence.</p>
+                    <button class="button primary" id="empty-start-button" type="button" disabled>Start inspection</button>
                   </div>
                 </div>
                 <div class="camera-actions">
-                  <div class="inspection-state neutral" id="inspection-state"><i></i>Stopped</div>
+                  <div class="inspection-state neutral" id="inspection-state">
+                    <i></i>
+                    Stopped
+                  </div>
                   <div class="machine-controls">
-                    <button class="button primary" id="start-button" type="button">Start inspection</button>
-                    <button class="button danger" id="stop-button" type="button" disabled>Stop</button>
-                    <button class="button quiet" id="reset-button" type="button">Reset session</button>
+                    <button class="button primary" id="start-button" type="button" disabled>Start inspection</button>
+                    <button class="button danger" id="stop-button" type="button" disabled>Stop inspection</button>
+                    <button class="button quiet" id="reset-button" type="button" disabled>Reset session</button>
                     <button class="button quiet" id="upload-mode-button" type="button">Analyze image</button>
                   </div>
+                  <p class="control-feedback" id="control-feedback" role="status" aria-live="polite">Start a session when the detector and camera are ready.</p>
                 </div>
+                <details class="overlay-settings">
+                  <summary>Feed display options</summary>
+                  <div class="camera-overlay-controls" aria-label="Camera overlay controls">
+                    <label>
+                      <input id="toggle-part-overlays" type="checkbox">
+                      <span>Part overlays</span>
+                    </label>
+                    <label>
+                      <input id="toggle-fish-ids" type="checkbox" checked>
+                      <span>Fish IDs</span>
+                    </label>
+                    <label>
+                      <input id="toggle-grades" type="checkbox" checked>
+                      <span>Grades</span>
+                    </label>
+                    <label>
+                      <input id="toggle-confidence" type="checkbox" checked>
+                      <span>Detector / support</span>
+                    </label>
+                    <label>
+                      <input id="toggle-features" type="checkbox">
+                      <span>Part labels</span>
+                    </label>
+                    <label>
+                      <input id="toggle-outlines" type="checkbox" checked>
+                      <span>Outlines</span>
+                    </label>
+                  </div>
+                </details>
               </article>
-
-              <aside class="latest-card glass" id="result-panel">
-                <div class="section-head"><div><p class="eyebrow">LATEST INSPECTION</p><h2>Result</h2></div><span class="decision neutral" id="decision">WAITING</span></div>
-                <div class="result-empty" id="result-empty"><span aria-hidden="true">◌</span><strong id="result-empty-title">No fish detected</strong><p id="result-empty-copy">Waiting for the next inspection…</p></div>
+              <section class="kpi-section" aria-label="Session totals">
+                <div class="section-head compact">
+                  <div>
+                    <p class="eyebrow">SESSION TOTALS</p>
+                    <h2>Inspection at a glance</h2>
+                  </div>
+                  <button class="text-button" id="open-confidence-button" type="button">
+                    Thresholds
+                    <strong id="threshold">—</strong>
+                  </button>
+                </div>
+                <div class="kpi-grid" id="kpi-grid">
+                  <p class="metric-waiting">Waiting for the local backend…</p>
+                </div>
+                <details class="session-details">
+                  <summary>Session performance &amp; track details</summary>
+                  <div class="secondary-kpi-grid" id="secondary-kpi-grid"></div>
+                </details>
+              </section>
+              <aside class="latest-card surface" id="result-panel">
+                <div class="section-head">
+                  <div>
+                    <p class="eyebrow">LATEST INSPECTION</p>
+                    <h2>Result</h2>
+                  </div>
+                  <span class="decision neutral" id="decision">WAITING</span>
+                </div>
+                <div class="result-empty" id="result-empty">
+                  <svg class="icon" aria-hidden="true" viewBox="0 0 24 24">
+                    <use href="#icon-fish"></use>
+                  </svg>
+                  <span aria-hidden="true"></span>
+                  <strong id="result-empty-title">Ready for the next fish</strong>
+                  <p id="result-empty-copy">The current track and its quality evidence will appear here.</p>
+                </div>
                 <div class="result-active hidden" id="result-active">
                   <p class="fish-label" id="result-fish">Fish #000000</p>
-                  <div class="grade-readout"><span>GRADE</span><strong id="result-label">—</strong></div>
-                  <dl class="inspection-facts"><div><dt>Final support</dt><dd id="confidence">—</dd></div><div><dt>Inspection time</dt><dd id="result-processing">—</dd></div><div><dt>Timestamp</dt><dd id="result-time">—</dd></div></dl>
-                  <div class="confidence-track" aria-hidden="true"><i id="confidence-bar"></i></div>
+                  <div class="grade-readout">
+                    <span>GRADE</span>
+                    <strong id="result-label">—</strong>
+                  </div>
+                  <dl class="inspection-facts">
+                    <div>
+                      <dt>Final support</dt>
+                      <dd id="confidence">—</dd>
+                    </div>
+                    <div>
+                      <dt>Inspection time</dt>
+                      <dd id="result-processing">—</dd>
+                    </div>
+                    <div>
+                      <dt>Timestamp</dt>
+                      <dd id="result-time">—</dd>
+                    </div>
+                  </dl>
+                  <div class="confidence-track" aria-hidden="true">
+                    <i id="confidence-bar"></i>
+                  </div>
                 </div>
                 <section class="verdict-evidence-panel hidden" id="latest-verdict-details" aria-label="Final verdict evidence">
-                  <div class="verdict-summary-row"><span>Verdict status</span><strong id="latest-verdict-status">Awaiting evidence</strong></div>
-                  <div class="verdict-summary-row"><span>Reason</span><strong id="latest-verdict-reason">No final verdict yet.</strong></div>
+                  <div class="verdict-summary-row">
+                    <span>Verdict status</span>
+                    <strong id="latest-verdict-status">Awaiting evidence</strong>
+                  </div>
+                  <div class="verdict-summary-row">
+                    <span>Reason</span>
+                    <strong id="latest-verdict-reason">No final verdict yet.</strong>
+                  </div>
                   <dl class="verdict-evidence-facts">
-                    <div><dt>Model 1 detection</dt><dd id="latest-detection-confidence">â€”</dd></div>
-                    <div><dt>Model 2 best evidence</dt><dd id="latest-model2-evidence">â€”</dd></div>
-                    <div><dt>Original coverage</dt><dd id="latest-coverage">â€”</dd></div>
-                    <div><dt>Effective weights</dt><dd id="latest-effective-weights">â€”</dd></div>
+                    <div>
+                      <dt>Model 1 detection</dt>
+                      <dd id="latest-detection-confidence">—</dd>
+                    </div>
+                    <div>
+                      <dt>Model 2 best evidence</dt>
+                      <dd id="latest-model2-evidence">—</dd>
+                    </div>
+                    <div>
+                      <dt>Original coverage</dt>
+                      <dd id="latest-coverage">—</dd>
+                    </div>
+                    <div>
+                      <dt>Effective weights</dt>
+                      <dd id="latest-effective-weights">—</dd>
+                    </div>
                   </dl>
                 </section>
-                <div class="feature-list"><h3>Part evidence</h3><div id="latest-feature-list"></div></div>
+                <div class="feature-list">
+                  <h3>Part evidence</h3>
+                  <div id="latest-feature-list"></div>
+                </div>
                 <p class="result-note" id="classification-policy">Model 2 quality grading appears when available.</p>
               </aside>
             </section>
-
-            <section class="upload-workspace glass hidden" id="upload-workspace" aria-label="Manual image analysis">
-              <div class="section-head"><div><p class="eyebrow">MANUAL ANALYSIS</p><h2>Analyze image</h2></div><button class="icon-button" id="close-upload-button" type="button" aria-label="Close image analysis">×</button></div>
-              <div class="upload-controls"><input id="upload-input" type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" /><button class="button primary" id="analyze-button" type="button" disabled>Analyze image</button><span class="soft-badge" id="upload-status">No image selected</span></div>
-              <p class="muted" id="upload-note">Choose an image for a separate local analysis. It does not change this live session.</p>
-              <img id="upload-result-image" class="upload-image hidden" alt="Annotated uploaded fish image" />
-              <div class="upload-results hidden" id="upload-results"><div class="mini-kpi"><span id="upload-count-label">Fish found</span><strong id="upload-fish-count">0</strong></div><div class="feature-counter-grid" id="upload-quality-counter-grid"></div></div>
-            </section>
-
-            <section class="glass runtime-diagnostics" id="runtime-diagnostics" aria-label="Developer runtime diagnostics">
-              <div class="section-head compact"><div><p class="eyebrow">DEVELOPER ONLY</p><h2>Runtime diagnostics</h2></div><label class="switch-row"><span>Enable bounded debug capture</span><input id="debug-runtime-enabled" type="checkbox" /></label></div>
-              <p class="muted" id="runtime-diagnostics-note">Off by default. Debug artifacts never alter grading or production inspection history.</p>
-              <div class="machine-controls"><button class="button quiet" id="debug-pause-button" type="button" disabled>Pause on current frame</button></div>
-              <div class="camera-overlay-controls debug-overlay-controls" aria-label="Model 2 debug overlay controls">
-                <label><input id="debug-model2-raw" type="checkbox" /> <span>Model 2 raw boxes</span></label>
-                <label><input id="debug-model2-associated" type="checkbox" /> <span>Model 2 associated boxes</span></label>
-                <label><input id="debug-model2-rejected" type="checkbox" /> <span>Model 2 rejected / unassigned</span></label>
-                <label><input id="debug-model2-labels" type="checkbox" /> <span>Model 2 labels</span></label>
-                <label><input id="debug-roi-boundary" type="checkbox" /> <span>ROI boundary</span></label>
+            <section class="upload-workspace surface hidden" id="upload-workspace" aria-label="Manual image analysis">
+              <div class="section-head">
+                <div>
+                  <p class="eyebrow">MANUAL ANALYSIS</p>
+                  <h2>Analyze image</h2>
+                </div>
+                <button class="icon-button" id="close-upload-button" type="button" aria-label="Close image analysis">×</button>
               </div>
-              <dl class="settings-list" id="runtime-diagnostics-values"></dl>
-              <div class="feature-list"><h3>Saved Model 1 candidates</h3><div id="hard-negative-list">Enable diagnostics to create bounded research-only candidates.</div></div>
+              <div class="upload-controls">
+                <input id="upload-input" type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" aria-label="Select a fish image for local analysis">
+                <button class="button primary" id="analyze-button" type="button" disabled>Analyze image</button>
+                <span class="soft-badge" id="upload-status">No image selected</span>
+              </div>
+              <p class="muted" id="upload-note">Choose an image for a separate local analysis. It does not change this live session.</p>
+              <img id="upload-result-image" class="upload-image hidden" alt="Annotated uploaded fish image">
+              <div class="upload-results hidden" id="upload-results">
+                <div class="mini-kpi">
+                  <span id="upload-count-label">Fish found</span>
+                  <strong id="upload-fish-count">0</strong>
+                </div>
+                <div class="feature-counter-grid" id="upload-quality-counter-grid"></div>
+              </div>
             </section>
-
-            <section class="kpi-section" aria-label="Session totals"><div class="section-head compact"><div><p class="eyebrow">SESSION TOTALS</p><h2>Inspection at a glance</h2></div><button class="text-button" id="open-confidence-button" type="button">Thresholds <strong id="threshold">—</strong></button></div><div class="kpi-grid" id="kpi-grid"></div></section>
-
-            <section class="feature-section glass"><div class="section-head compact"><div><p class="eyebrow">DETECTED FEATURES</p><h2>Session feature signals</h2></div><span class="soft-badge">Model-backed only</span></div><div class="feature-counter-grid" id="feature-counter-grid"></div></section>
-
-            <section class="analytics-section" id="analytics-section" aria-labelledby="analytics-heading"><div class="section-head compact"><div><p class="eyebrow">ANALYTICS</p><h2 id="analytics-heading">Session analytics</h2></div><span class="soft-badge" id="analytics-period">Current session</span></div><div class="analytics-grid"><article class="chart-card glass"><h3>Grade distribution</h3><div class="chart-empty" id="grade-chart-empty">Waiting for inspection data</div><div class="donut-wrap hidden" id="grade-chart"><div class="donut" id="grade-donut"><div><strong id="grade-total">0</strong><span>fish</span></div></div><div class="chart-legend" id="grade-legend"></div></div></article><article class="chart-card glass"><h3>Detected features</h3><div class="chart-empty" id="feature-chart-empty">Waiting for inspection data</div><div class="bar-chart hidden" id="feature-chart"></div></article><article class="chart-card glass wide-chart"><div class="chart-title-row"><h3>Inspection throughput</h3><span id="throughput-caption">—</span></div><div class="chart-empty" id="throughput-chart-empty">Waiting for inspection data</div><svg class="line-chart hidden" id="throughput-chart" viewBox="0 0 560 180" preserveAspectRatio="none" aria-label="Cumulative fish processed over time"><polyline id="throughput-line" points=""></polyline></svg></article><article class="chart-card glass"><h3>Average final support</h3><div class="chart-empty" id="confidence-chart-empty">Waiting for inspection data</div><div class="confidence-chart hidden" id="confidence-chart"><strong id="average-grade-confidence">—</strong><span id="confidence-chart-copy">Weighted whole-fish support</span></div></article></div></section>
-
-          <section class="recent-section glass"><div class="section-head compact"><div><p class="eyebrow">RECENT INSPECTIONS</p><h2>Latest completed fish</h2></div><button class="text-button" id="view-all-button" type="button">View all →</button></div><div class="history-empty" id="recent-empty">No fish counted in this session.</div><div class="table-wrap hidden" id="recent-table-wrap"><table><thead><tr><th>Fish ID</th><th>Time</th><th>Grade</th><th>Final support</th><th>Detected features</th><th>Processing</th></tr></thead><tbody id="recent-history-body"></tbody></table></div></section>
+            <section class="recent-section surface" id="recent-inspections">
+              <div class="section-head compact">
+                <div>
+                  <p class="eyebrow">RECENT INSPECTIONS</p>
+                  <h2>Latest completed fish</h2>
+                </div>
+                <button class="text-button" id="view-all-button" type="button">View all →</button>
+              </div>
+              <div class="history-empty" id="recent-empty">No completed inspections yet. Fish appear here after crossing the counting line.</div>
+              <div class="table-wrap hidden" id="recent-table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">Fish ID</th>
+                      <th scope="col">Time</th>
+                      <th scope="col">Grade</th>
+                      <th scope="col">Final support</th>
+                      <th scope="col">Detected features</th>
+                      <th scope="col">Processing</th>
+                    </tr>
+                  </thead>
+                  <tbody id="recent-history-body"></tbody>
+                </table>
+              </div>
+            </section>
+            <section class="feature-section surface">
+              <div class="section-head compact">
+                <div>
+                  <p class="eyebrow">PART OBSERVATIONS</p>
+                  <h2>Observed regions this session</h2>
+                </div>
+                <span class="soft-badge">Model-backed only</span>
+              </div>
+              <div class="feature-counter-grid" id="feature-counter-grid"></div>
+            </section>
+            <details class="advanced-panel analytics-disclosure" id="analytics-disclosure">
+              <summary>
+                <span>
+                  <strong>Session analytics</strong>
+                  <small>Grade distribution, throughput, and evidence measurements</small>
+                </span>
+                <span class="soft-badge">Details</span>
+              </summary>
+              <section class="analytics-section" id="analytics-section" aria-labelledby="analytics-heading">
+                <div class="section-head compact">
+                  <div>
+                    <p class="eyebrow">ANALYTICS</p>
+                    <h2 id="analytics-heading">Session analytics</h2>
+                  </div>
+                  <span class="soft-badge" id="analytics-period">Current session</span>
+                </div>
+                <div class="analytics-grid">
+                  <article class="chart-card surface">
+                    <h3>Grade distribution</h3>
+                    <div class="chart-empty" id="grade-chart-empty">Waiting for inspection data</div>
+                    <div class="donut-wrap hidden" id="grade-chart">
+                      <div class="donut" id="grade-donut">
+                        <div>
+                          <strong id="grade-total">0</strong>
+                          <span>fish</span>
+                        </div>
+                      </div>
+                      <div class="chart-legend" id="grade-legend"></div>
+                    </div>
+                  </article>
+                  <article class="chart-card surface">
+                    <h3>Detected features</h3>
+                    <div class="chart-empty" id="feature-chart-empty">Waiting for inspection data</div>
+                    <div class="bar-chart hidden" id="feature-chart"></div>
+                  </article>
+                  <article class="chart-card surface wide-chart">
+                    <div class="chart-title-row">
+                      <h3>Inspection throughput</h3>
+                      <span id="throughput-caption">—</span>
+                    </div>
+                    <div class="chart-empty" id="throughput-chart-empty">Waiting for inspection data</div>
+                    <svg class="line-chart hidden" id="throughput-chart" viewBox="0 0 560 180" preserveaspectratio="none" aria-label="Cumulative fish processed over time">
+                      <polyline id="throughput-line" points=""></polyline>
+                    </svg>
+                  </article>
+                  <article class="chart-card surface">
+                    <h3>Average final support</h3>
+                    <div class="chart-empty" id="confidence-chart-empty">Waiting for inspection data</div>
+                    <div class="confidence-chart hidden" id="confidence-chart">
+                      <strong id="average-grade-confidence">—</strong>
+                      <span id="confidence-chart-copy">Weighted whole-fish support</span>
+                    </div>
+                  </article>
+                </div>
+              </section>
+            </details>
+            <details class="advanced-panel" id="advanced-diagnostics">
+              <summary>
+                <span>
+                  <strong>Runtime diagnostics</strong>
+                  <small>Timing, frame delivery, and research capture</small>
+                </span>
+                <span class="soft-badge">Advanced</span>
+              </summary>
+              <section class="surface runtime-diagnostics" id="runtime-diagnostics" aria-label="Developer runtime diagnostics">
+                <div class="section-head compact">
+                  <div>
+                    <p class="eyebrow">DEVELOPER ONLY</p>
+                    <h2>Runtime diagnostics</h2>
+                  </div>
+                  <label class="switch-row">
+                    <span>Enable bounded debug capture</span>
+                    <input id="debug-runtime-enabled" type="checkbox">
+                  </label>
+                </div>
+                <p class="muted" id="runtime-diagnostics-note">Off by default. Debug artifacts never alter grading or production inspection history.</p>
+                <div class="machine-controls">
+                  <button class="button quiet" id="debug-pause-button" type="button" disabled>Pause on current frame</button>
+                </div>
+                <div class="camera-overlay-controls debug-overlay-controls" aria-label="Model 2 debug overlay controls">
+                  <label>
+                    <input id="debug-model2-raw" type="checkbox">
+                    <span>Model 2 raw boxes</span>
+                  </label>
+                  <label>
+                    <input id="debug-model2-associated" type="checkbox">
+                    <span>Model 2 associated boxes</span>
+                  </label>
+                  <label>
+                    <input id="debug-model2-rejected" type="checkbox">
+                    <span>Model 2 rejected / unassigned</span>
+                  </label>
+                  <label>
+                    <input id="debug-model2-labels" type="checkbox">
+                    <span>Model 2 labels</span>
+                  </label>
+                  <label>
+                    <input id="debug-roi-boundary" type="checkbox">
+                    <span>ROI boundary</span>
+                  </label>
+                </div>
+                <dl class="settings-list" id="runtime-diagnostics-values"></dl>
+                <div class="feature-list">
+                  <h3>Saved Model 1 candidates</h3>
+                  <div id="hard-negative-list">Enable diagnostics to create bounded research-only candidates.</div>
+                </div>
+              </section>
+            </details>
+            <footer class="workspace-footer">
+              <span>Tamban inspection · Local processing</span>
+              <span>Model evidence supports operator review.</span>
+            </footer>
           </section>
-
-          <section class="view hidden" id="view-history" aria-label="Inspection history"><div class="view-intro"><p class="eyebrow">INSPECTION HISTORY</p><h2>Durable inspection records</h2><p>Completed fish records are stored locally and can be filtered by session or date.</p></div><section class="glass history-workspace"><div class="history-filters"><label>Search fish ID<input id="history-search" type="search" placeholder="#0128" /></label><label>Grade<select id="history-grade"><option value="">All grades</option><option>Class A</option><option>Class B</option><option>Class C</option><option>Rejected</option><option>Ungraded</option></select></label><label>Detected region<select id="history-feature"><option value="">All regions</option><option>Head</option><option>Body</option><option>Tail</option></select></label><label>Minimum final support<input id="history-confidence" type="number" min="0" max="100" placeholder="0%" /></label><button class="button quiet" id="history-filter-button" type="button">Apply</button></div><div class="history-empty" id="history-empty">No inspection records match these filters.</div><div class="table-wrap hidden" id="history-table-wrap"><table><thead><tr><th>Fish ID</th><th>Timestamp</th><th>Grade</th><th>Final support</th><th>Model 1 confidence</th><th>Detected regions</th><th>Model 2 classes</th><th>Processing</th></tr></thead><tbody id="history-body"></tbody></table></div><div class="pagination"><button class="icon-button" id="history-prev" type="button" aria-label="Previous page">‹</button><span id="history-page">Page 1</span><button class="icon-button" id="history-next" type="button" aria-label="Next page">›</button></div></section></section>
-
-          <section class="view hidden" id="view-model" aria-label="Model information"><div class="view-intro"><p class="eyebrow">MODELS</p><h2>Local two-model status</h2><p>Model 1 locates fish; Model 2 grades each Model 1 crop. Technical paths remain hidden from operators.</p></div><section class="model-grid"><article class="glass model-card"><p class="eyebrow">MODEL 1 · FISH DETECTION</p><h3 id="detector-model-name">Fish detector</h3><dl><div><dt>Status</dt><dd id="detector-model-status">Checking</dd></div><div><dt>Checkpoint</dt><dd id="detector-checkpoint">Unresolved</dd></div><div><dt>Inference device</dt><dd id="detector-device">—</dd></div><div><dt>Detection confidence</dt><dd id="detector-threshold">—</dd></div></dl></article><article class="glass model-card"><p class="eyebrow">MODEL 2 · QUALITY</p><h3 id="segmenter-model-name">Quality model</h3><dl><div><dt>Status</dt><dd id="segmenter-model-status">Checking</dd></div><div><dt>Checkpoint</dt><dd id="segmenter-checkpoint">Unresolved</dd></div><div><dt>Inference device</dt><dd id="segmenter-device">—</dd></div><div><dt>Average inference</dt><dd id="segmenter-inference">—</dd></div></dl></article></section></section>
+          <section class="view hidden" id="view-history" aria-label="Inspection history">
+            <div class="view-intro">
+              <p class="eyebrow">INSPECTION HISTORY</p>
+              <h2>Durable inspection records</h2>
+              <p>Completed fish records are stored locally and can be filtered by session or date.</p>
+            </div>
+            <section class="surface history-workspace">
+              <div class="history-filters">
+                <label>
+                  Search fish ID
+                  <input id="history-search" type="search" placeholder="#0128">
+                </label>
+                <label>
+                  Grade
+                  <select id="history-grade">
+                    <option value="">All grades</option>
+                    <option>Class A</option>
+                    <option>Class B</option>
+                    <option>Class C</option>
+                    <option>Rejected</option>
+                    <option>Ungraded</option>
+                  </select>
+                </label>
+                <label>
+                  Detected region
+                  <select id="history-feature">
+                    <option value="">All regions</option>
+                    <option>Head</option>
+                    <option>Body</option>
+                    <option>Tail</option>
+                  </select>
+                </label>
+                <label>
+                  Minimum final support
+                  <input id="history-confidence" type="number" min="0" max="100" placeholder="0%">
+                </label>
+                <button class="button quiet" id="history-filter-button" type="button">Apply</button>
+              </div>
+              <div class="history-empty" id="history-empty">No inspection records match these filters.</div>
+              <div class="table-wrap hidden" id="history-table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col">Fish ID</th>
+                      <th scope="col">Timestamp</th>
+                      <th scope="col">Grade</th>
+                      <th scope="col">Final support</th>
+                      <th scope="col">Model 1 confidence</th>
+                      <th scope="col">Detected regions</th>
+                      <th scope="col">Model 2 classes</th>
+                      <th scope="col">Processing</th>
+                    </tr>
+                  </thead>
+                  <tbody id="history-body"></tbody>
+                </table>
+              </div>
+              <div class="pagination">
+                <button class="icon-button" id="history-prev" type="button" aria-label="Previous page">‹</button>
+                <span id="history-page">Page 1</span>
+                <button class="icon-button" id="history-next" type="button" aria-label="Next page">›</button>
+              </div>
+            </section>
+          </section>
+          <section class="view hidden" id="view-model" aria-label="Model information">
+            <div class="view-intro">
+              <p class="eyebrow">MODELS</p>
+              <h2>Local two-model status</h2>
+              <p>Model 1 locates fish; Model 2 grades each Model 1 crop. Technical paths remain hidden from operators.</p>
+            </div>
+            <section class="model-grid">
+              <article class="surface model-card">
+                <p class="eyebrow">MODEL 1 · FISH DETECTION</p>
+                <h3 id="detector-model-name">Fish detector</h3>
+                <dl>
+                  <div>
+                    <dt>Status</dt>
+                    <dd id="detector-model-status">Checking</dd>
+                  </div>
+                  <div>
+                    <dt>Checkpoint</dt>
+                    <dd id="detector-checkpoint">Unresolved</dd>
+                  </div>
+                  <div>
+                    <dt>Inference device</dt>
+                    <dd id="detector-device">—</dd>
+                  </div>
+                  <div>
+                    <dt>Detection confidence</dt>
+                    <dd id="detector-threshold">—</dd>
+                  </div>
+                </dl>
+              </article>
+              <article class="surface model-card">
+                <p class="eyebrow">MODEL 2 · QUALITY</p>
+                <h3 id="segmenter-model-name">Quality model</h3>
+                <dl>
+                  <div>
+                    <dt>Status</dt>
+                    <dd id="segmenter-model-status">Checking</dd>
+                  </div>
+                  <div>
+                    <dt>Checkpoint</dt>
+                    <dd id="segmenter-checkpoint">Unresolved</dd>
+                  </div>
+                  <div>
+                    <dt>Inference device</dt>
+                    <dd id="segmenter-device">—</dd>
+                  </div>
+                  <div>
+                    <dt>Average inference</dt>
+                    <dd id="segmenter-inference">—</dd>
+                  </div>
+                </dl>
+              </article>
+            </section>
+          </section>
           <section class="view hidden" id="view-review" aria-label="Manual review queue">
             <div class="view-intro">
               <p class="eyebrow">REVIEW QUEUE</p>
               <h2>Needs Review</h2>
               <p>These fish remain Ungraded because the final acceptance rules did not find sufficient reliable evidence. They are not Rejected fish.</p>
             </div>
-            <section class="glass history-workspace review-workspace">
-              <div class="review-queue-note"><strong>Original AI result is preserved.</strong><span>Open a fish to inspect its evidence and record a separate manual final grade.</span></div>
+            <section class="surface history-workspace review-workspace">
+              <div class="review-queue-note">
+                <strong>Original AI result is preserved.</strong>
+                <span>Open a fish to inspect its evidence and record a separate manual final grade.</span>
+              </div>
               <div class="history-empty" id="review-empty">No fish currently need review.</div>
               <div class="table-wrap hidden" id="review-table-wrap">
                 <table>
-                  <thead><tr><th>Fish ID</th><th>Timestamp</th><th>Original AI verdict</th><th>Final support</th><th>Coverage</th><th>Reason</th><th>Manual final</th><th>Review</th></tr></thead>
+                  <thead>
+                    <tr>
+                      <th scope="col">Fish ID</th>
+                      <th scope="col">Timestamp</th>
+                      <th scope="col">Original AI verdict</th>
+                      <th scope="col">Final support</th>
+                      <th scope="col">Coverage</th>
+                      <th scope="col">Reason</th>
+                      <th scope="col">Manual final</th>
+                      <th scope="col">Review</th>
+                    </tr>
+                  </thead>
                   <tbody id="review-body"></tbody>
                 </table>
               </div>
-              <div class="pagination"><button class="icon-button" id="review-prev" type="button" aria-label="Previous review page">&lsaquo;</button><span id="review-page">Page 1</span><button class="icon-button" id="review-next" type="button" aria-label="Next review page">&rsaquo;</button></div>
+              <div class="pagination">
+                <button class="icon-button" id="review-prev" type="button" aria-label="Previous review page">‹</button>
+                <span id="review-page">Page 1</span>
+                <button class="icon-button" id="review-next" type="button" aria-label="Next review page">›</button>
+              </div>
             </section>
           </section>
         </main>
       </div>
     </div>
-
-    <aside class="settings-drawer glass" id="settings-drawer" aria-label="Settings" aria-hidden="true"><div class="drawer-head"><div><p class="eyebrow">SETTINGS</p><h2>Models & display</h2></div><button class="icon-button" id="close-settings-button" type="button" aria-label="Close settings">×</button></div><section class="settings-section"><h3>Model 1 · Detection</h3><label class="range-label">Detector confidence <output id="settings-threshold">—</output></label><div class="range-control"><button class="step-button" id="confidence-minus" type="button" aria-label="Decrease detector confidence">−</button><input id="confidence-slider" type="range" min="0" max="100" step="1" value="50" /><button class="step-button" id="confidence-plus" type="button" aria-label="Increase detector confidence">+</button></div><button class="text-button" id="reset-confidence-button" type="button">Reset detector default</button></section><section class="settings-section"><h3>Model 2 · Quality parts</h3><label class="range-label">Model 2 detector threshold <output id="settings-quality-threshold">—</output></label><div class="range-control"><button class="step-button" id="quality-confidence-minus" type="button" aria-label="Decrease Model 2 detector threshold">−</button><input id="quality-confidence-slider" type="range" min="0" max="100" step="1" value="60" /><button class="step-button" id="quality-confidence-plus" type="button" aria-label="Increase Model 2 detector threshold">+</button></div><dl class="settings-list"><div><dt>Inference mode</dt><dd id="settings-quality-mode">—</dd></div><div><dt>Quality interval</dt><dd id="settings-quality-interval">—</dd></div><div><dt>ROI padding</dt><dd id="settings-quality-roi-padding">—</dd></div></dl><p class="muted">This raw Model 2 detection threshold is separate from part-evidence and final-verdict support thresholds. Stop inspection before changing it.</p><button class="text-button" id="reset-quality-confidence-button" type="button">Reset Model 2 default</button></section><section class="settings-section"><h3>Camera</h3><dl class="settings-list"><div><dt>Selected camera</dt><dd id="settings-camera">Local device</dd></div><div><dt>Resolution</dt><dd id="settings-resolution">—</dd></div><div><dt>FPS</dt><dd id="settings-fps">0.0</dd></div></dl></section><section class="settings-section"><h3>Display</h3><label class="switch-row"><span>Show part overlays</span><input id="settings-part-overlays" type="checkbox" /></label><label class="switch-row"><span>Show fish IDs</span><input id="settings-fish-ids" type="checkbox" checked /></label><label class="switch-row"><span>Show grades</span><input id="settings-grades" type="checkbox" checked /></label><label class="switch-row"><span>Show detector confidence</span><input id="settings-confidence" type="checkbox" checked /></label><label class="switch-row"><span>Show part labels</span><input id="settings-features" type="checkbox" /></label><label class="switch-row"><span>Show outlines</span><input id="settings-outlines" type="checkbox" checked /></label></section></aside>
-    <aside class="settings-drawer camera-calibration-drawer glass" id="camera-calibration-drawer" aria-label="Camera calibration" aria-hidden="true">
-      <div class="drawer-head"><div><p class="eyebrow">CAMERA CALIBRATION</p><h2>Inspection camera</h2></div><button class="icon-button" id="close-camera-calibration-button" type="button" aria-label="Close camera calibration">x</button></div>
+    <aside class="settings-drawer surface" id="settings-drawer" aria-label="Settings" aria-hidden="true" role="dialog" aria-modal="true" inert tabindex="-1">
+      <div class="drawer-head">
+        <div>
+          <p class="eyebrow">SETTINGS</p>
+          <h2>Models &amp; display</h2>
+        </div>
+        <button class="icon-button" id="close-settings-button" type="button" aria-label="Close settings">×</button>
+      </div>
+      <section class="settings-section">
+        <h3>Model 1 · Detection</h3>
+        <label class="range-label" for="confidence-slider">
+          Detector confidence
+          <output id="settings-threshold" for="confidence-slider">—</output>
+        </label>
+        <div class="range-control">
+          <button class="step-button" id="confidence-minus" type="button" aria-label="Decrease detector confidence">−</button>
+          <input id="confidence-slider" type="range" min="0" max="100" step="1" value="50">
+          <button class="step-button" id="confidence-plus" type="button" aria-label="Increase detector confidence">+</button>
+        </div>
+        <button class="text-button" id="reset-confidence-button" type="button">Reset detector default</button>
+      </section>
+      <section class="settings-section">
+        <h3>Model 2 · Quality parts</h3>
+        <label class="range-label" for="quality-confidence-slider">
+          Model 2 detector threshold
+          <output id="settings-quality-threshold" for="quality-confidence-slider">—</output>
+        </label>
+        <div class="range-control">
+          <button class="step-button" id="quality-confidence-minus" type="button" aria-label="Decrease Model 2 detector threshold">−</button>
+          <input id="quality-confidence-slider" type="range" min="0" max="100" step="1" value="25">
+          <button class="step-button" id="quality-confidence-plus" type="button" aria-label="Increase Model 2 detector threshold">+</button>
+        </div>
+        <dl class="settings-list">
+          <div>
+            <dt>Inference mode</dt>
+            <dd id="settings-quality-mode">—</dd>
+          </div>
+          <div>
+            <dt>Quality interval</dt>
+            <dd id="settings-quality-interval">—</dd>
+          </div>
+          <div>
+            <dt>ROI padding</dt>
+            <dd id="settings-quality-roi-padding">—</dd>
+          </div>
+        </dl>
+        <p class="muted">This raw Model 2 detection threshold is separate from part-evidence and final-verdict support thresholds. Stop inspection before changing it.</p>
+        <button class="text-button" id="reset-quality-confidence-button" type="button">Reset Model 2 default</button>
+      </section>
+      <section class="settings-section">
+        <h3>Camera</h3>
+        <dl class="settings-list">
+          <div>
+            <dt>Selected camera</dt>
+            <dd id="settings-camera">Local device</dd>
+          </div>
+          <div>
+            <dt>Resolution</dt>
+            <dd id="settings-resolution">—</dd>
+          </div>
+          <div>
+            <dt>FPS</dt>
+            <dd id="settings-fps">0.0</dd>
+          </div>
+        </dl>
+      </section>
+      <section class="settings-section">
+        <h3>Display</h3>
+        <label class="switch-row">
+          <span>Show part overlays</span>
+          <input id="settings-part-overlays" type="checkbox">
+        </label>
+        <label class="switch-row">
+          <span>Show fish IDs</span>
+          <input id="settings-fish-ids" type="checkbox" checked>
+        </label>
+        <label class="switch-row">
+          <span>Show grades</span>
+          <input id="settings-grades" type="checkbox" checked>
+        </label>
+        <label class="switch-row">
+          <span>Show detector confidence</span>
+          <input id="settings-confidence" type="checkbox" checked>
+        </label>
+        <label class="switch-row">
+          <span>Show part labels</span>
+          <input id="settings-features" type="checkbox">
+        </label>
+        <label class="switch-row">
+          <span>Show outlines</span>
+          <input id="settings-outlines" type="checkbox" checked>
+        </label>
+      </section>
+    </aside>
+    <aside class="settings-drawer camera-calibration-drawer surface" id="camera-calibration-drawer" aria-label="Camera calibration" aria-hidden="true" role="dialog" aria-modal="true" inert tabindex="-1">
+      <div class="drawer-head">
+        <div>
+          <p class="eyebrow">CAMERA CALIBRATION</p>
+          <h2>Inspection camera</h2>
+        </div>
+        <button class="icon-button" id="close-camera-calibration-button" type="button" aria-label="Close camera calibration">×</button>
+      </div>
       <section class="camera-summary" aria-live="polite">
-        <div><strong id="camera-device-name">Camera unavailable</strong><span id="camera-connection">Start inspection to connect</span></div><span class="camera-lock-badge" id="camera-lock-badge">UNLOCKED</span>
+        <div>
+          <strong id="camera-device-name">Camera unavailable</strong>
+          <span id="camera-connection">Start inspection to connect</span>
+        </div>
+        <span class="camera-lock-badge" id="camera-lock-badge">UNLOCKED</span>
       </section>
-      <dl class="camera-facts"><div><dt>Capture</dt><dd id="camera-capture-resolution">-</dd></div><div><dt>Processing</dt><dd id="camera-processing-resolution">-</dd></div><div><dt>FPS</dt><dd id="camera-hardware-fps">-</dd></div><div><dt>Backend</dt><dd id="camera-backend">-</dd></div><div><dt>Profile</dt><dd id="camera-profile-name">Not saved</dd></div><div><dt>Settings</dt><dd id="camera-lock-state">Unlocked</dd></div></dl>
+      <dl class="camera-facts">
+        <div>
+          <dt>Capture</dt>
+          <dd id="camera-capture-resolution">-</dd>
+        </div>
+        <div>
+          <dt>Processing</dt>
+          <dd id="camera-processing-resolution">-</dd>
+        </div>
+        <div>
+          <dt>FPS</dt>
+          <dd id="camera-hardware-fps">-</dd>
+        </div>
+        <div>
+          <dt>Backend</dt>
+          <dd id="camera-backend">-</dd>
+        </div>
+        <div>
+          <dt>Profile</dt>
+          <dd id="camera-profile-name">Not saved</dd>
+        </div>
+        <div>
+          <dt>Settings</dt>
+          <dd id="camera-lock-state">Unlocked</dd>
+        </div>
+      </dl>
       <section class="calibration-section">
-        <label class="calibration-switch"><span><strong>Calibration Mode</strong><small>Live detection remains visible; calibration frames are not recorded.</small></span><input id="calibration-mode-toggle" type="checkbox" /></label>
+        <label class="calibration-switch">
+          <span>
+            <strong>Calibration Mode</strong>
+            <small>Live detection remains visible; calibration frames are not recorded.</small>
+          </span>
+          <input id="calibration-mode-toggle" type="checkbox">
+        </label>
       </section>
-      <section class="calibration-section"><div class="calibration-section-head"><h3>Camera controls</h3><span id="camera-control-note">Querying camera...</span></div><div class="camera-control-list" id="camera-control-list"></div></section>
-      <section class="calibration-section hidden" id="image-statistics-section"><div class="calibration-section-head"><h3>Image conditions</h3><span>Informational</span></div><dl class="image-statistics"><div><dt>Frame brightness</dt><dd id="stat-frame-brightness">-</dd></div><div><dt>Fish ROI brightness</dt><dd id="stat-fish-brightness">-</dd></div><div><dt>Background brightness</dt><dd id="stat-background-brightness">-</dd></div><div><dt>Fish / background contrast</dt><dd id="stat-contrast">-</dd></div></dl><p class="condition-warning hidden" id="camera-condition-warning"></p></section>
-      <section class="calibration-section research-calibration-section"><div class="calibration-section-head"><h3>Research calibration record</h3><span id="camera-profile-confirmation">Not confirmed</span></div><p class="research-calibration-note">These acquisition records are for a future independent study only. They do not affect Model 1, Model 2, or grade decisions.</p><div class="reference-scene-actions"><button class="button quiet" id="camera-record-empty-reference-button" type="button">Record empty conveyor</button><button class="button quiet" id="camera-record-fish-reference-button" type="button">Record fish reference</button></div><div class="installation-fields"><label>Operator name<input id="camera-operator-name" autocomplete="name" placeholder="Optional operator name" /></label><label>Device identity<input id="camera-install-device-identity" placeholder="Serial / physical device identity" /></label><label>Camera height<input id="camera-install-camera-height" placeholder="e.g. 45 cm" /></label><label>Camera angle<input id="camera-install-camera-angle" placeholder="e.g. 90 degrees" /></label><label>Conveyor position<input id="camera-install-conveyor-position" placeholder="Recorded conveyor position" /></label><label>Lighting position<input id="camera-install-lighting-position" placeholder="Recorded lighting position" /></label></div><button class="button primary research-confirm-button" id="camera-confirm-profile-button" type="button">Confirm calibration profile</button></section>
-      <div class="camera-calibration-actions"><button class="button quiet" id="camera-reset-button" type="button">Reset</button><button class="button quiet" id="camera-load-profile-button" type="button">Load saved profile</button><button class="button primary" id="camera-save-profile-button" type="button">Save inspection profile</button><button class="button quiet" id="camera-lock-button" type="button">Lock inspection camera</button></div>
-      <p class="camera-calibration-message" id="camera-calibration-message">Camera controls are available while Calibration Mode is on.</p>
+      <section class="calibration-section">
+        <div class="calibration-section-head">
+          <h3>Camera controls</h3>
+          <span id="camera-control-note">Querying camera...</span>
+        </div>
+        <div class="camera-control-list" id="camera-control-list"></div>
+      </section>
+      <section class="calibration-section hidden" id="image-statistics-section">
+        <div class="calibration-section-head">
+          <h3>Image conditions</h3>
+          <span>Informational</span>
+        </div>
+        <dl class="image-statistics">
+          <div>
+            <dt>Frame brightness</dt>
+            <dd id="stat-frame-brightness">-</dd>
+          </div>
+          <div>
+            <dt>Fish ROI brightness</dt>
+            <dd id="stat-fish-brightness">-</dd>
+          </div>
+          <div>
+            <dt>Background brightness</dt>
+            <dd id="stat-background-brightness">-</dd>
+          </div>
+          <div>
+            <dt>Fish / background contrast</dt>
+            <dd id="stat-contrast">-</dd>
+          </div>
+        </dl>
+        <p class="condition-warning hidden" id="camera-condition-warning"></p>
+      </section>
+      <details class="calibration-section research-calibration-section">
+        <summary>Research calibration record</summary>
+        <div class="calibration-section-head">
+          <h3>Research calibration record</h3>
+          <span id="camera-profile-confirmation">Not confirmed</span>
+        </div>
+        <p class="research-calibration-note">These acquisition records are for a future independent study only. They do not affect Model 1, Model 2, or grade decisions.</p>
+        <div class="reference-scene-actions">
+          <button class="button quiet" id="camera-record-empty-reference-button" type="button">Record empty conveyor</button>
+          <button class="button quiet" id="camera-record-fish-reference-button" type="button">Record fish reference</button>
+        </div>
+        <div class="installation-fields">
+          <label>
+            Operator name
+            <input id="camera-operator-name" autocomplete="name" placeholder="Optional operator name">
+          </label>
+          <label>
+            Device identity
+            <input id="camera-install-device-identity" placeholder="Serial / physical device identity">
+          </label>
+          <label>
+            Camera height
+            <input id="camera-install-camera-height" placeholder="e.g. 45 cm">
+          </label>
+          <label>
+            Camera angle
+            <input id="camera-install-camera-angle" placeholder="e.g. 90 degrees">
+          </label>
+          <label>
+            Conveyor position
+            <input id="camera-install-conveyor-position" placeholder="Recorded conveyor position">
+          </label>
+          <label>
+            Lighting position
+            <input id="camera-install-lighting-position" placeholder="Recorded lighting position">
+          </label>
+        </div>
+        <button class="button primary research-confirm-button" id="camera-confirm-profile-button" type="button">Confirm calibration profile</button>
+      </details>
+      <div class="camera-calibration-actions">
+        <button class="button quiet" id="camera-reset-button" type="button">Reset</button>
+        <button class="button quiet" id="camera-load-profile-button" type="button">Load saved profile</button>
+        <button class="button primary" id="camera-save-profile-button" type="button">Save inspection profile</button>
+        <button class="button quiet" id="camera-lock-button" type="button">Lock inspection camera</button>
+      </div>
+      <p class="camera-calibration-message" id="camera-calibration-message" role="status" aria-live="polite">Camera controls are available while Calibration Mode is on.</p>
     </aside>
     <div class="scrim hidden" id="scrim"></div>
-
-    <section class="export-modal glass hidden" id="export-modal" role="dialog" aria-modal="true" aria-labelledby="export-title"><div class="modal-head"><div><p class="eyebrow">EXPORT</p><h2 id="export-title">Export inspection data</h2></div><button class="icon-button" id="close-export-button" type="button" aria-label="Close export">×</button></div><form id="export-form"><fieldset><legend>Format</legend><label><input type="radio" name="export-format" value="xlsx" checked /> Excel (.xlsx)</label><label><input type="radio" name="export-format" value="csv" /> CSV (.csv)</label></fieldset><fieldset><legend>Range</legend><label><input type="radio" name="export-range" value="current_session" checked /> Current session</label><label><input type="radio" name="export-range" value="today" /> Today</label><label><input type="radio" name="export-range" value="custom" /> Custom date range</label><div class="date-range hidden" id="date-range"><label>From<input id="export-start-date" type="date" /></label><label>To<input id="export-end-date" type="date" /></label></div></fieldset><fieldset><legend>Fields</legend><div class="export-fields"><label><input type="checkbox" value="fish_id" checked /> Fish ID</label><label><input type="checkbox" value="timestamp" checked /> Timestamp</label><label><input type="checkbox" value="detection_confidence" checked /> Detection confidence</label><label><input type="checkbox" value="grade" checked /> Grade</label><label><input type="checkbox" value="grade_confidence" checked /> Final support</label><label><input type="checkbox" value="detected_regions" checked /> Detected regions</label><label><input type="checkbox" value="model2_classes" checked /> Model 2 classes</label><label><input type="checkbox" value="processing_time" checked /> Processing time</label></div></fieldset><p class="muted">Exports include only evidence produced by the two supplied models.</p><div class="modal-actions"><button class="button quiet" id="cancel-export-button" type="button">Cancel</button><button class="button primary" id="confirm-export-button" type="submit">Export</button></div></form></section>
+    <section class="export-modal surface hidden" id="export-modal" role="dialog" aria-modal="true" aria-labelledby="export-title" tabindex="-1">
+      <div class="modal-head">
+        <div>
+          <p class="eyebrow">EXPORT</p>
+          <h2 id="export-title">Export inspection data</h2>
+        </div>
+        <button class="icon-button" id="close-export-button" type="button" aria-label="Close export">×</button>
+      </div>
+      <form id="export-form">
+        <fieldset>
+          <legend>Format</legend>
+          <label>
+            <input type="radio" name="export-format" value="xlsx" checked>
+            Excel (.xlsx)
+          </label>
+          <label>
+            <input type="radio" name="export-format" value="csv">
+            CSV (.csv)
+          </label>
+        </fieldset>
+        <fieldset>
+          <legend>Range</legend>
+          <label>
+            <input type="radio" name="export-range" value="current_session" checked>
+            Current session
+          </label>
+          <label>
+            <input type="radio" name="export-range" value="today">
+            Today
+          </label>
+          <label>
+            <input type="radio" name="export-range" value="custom">
+            Custom date range
+          </label>
+          <div class="date-range hidden" id="date-range">
+            <label>
+              From
+              <input id="export-start-date" type="date">
+            </label>
+            <label>
+              To
+              <input id="export-end-date" type="date">
+            </label>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Fields</legend>
+          <div class="export-fields">
+            <label>
+              <input type="checkbox" value="fish_id" checked>
+              Fish ID
+            </label>
+            <label>
+              <input type="checkbox" value="timestamp" checked>
+              Timestamp
+            </label>
+            <label>
+              <input type="checkbox" value="detection_confidence" checked>
+              Detection confidence
+            </label>
+            <label>
+              <input type="checkbox" value="grade" checked>
+              Grade
+            </label>
+            <label>
+              <input type="checkbox" value="grade_confidence" checked>
+              Final support
+            </label>
+            <label>
+              <input type="checkbox" value="detected_regions" checked>
+              Detected regions
+            </label>
+            <label>
+              <input type="checkbox" value="model2_classes" checked>
+              Model 2 classes
+            </label>
+            <label>
+              <input type="checkbox" value="processing_time" checked>
+              Processing time
+            </label>
+          </div>
+        </fieldset>
+        <p class="muted">Exports include only evidence produced by the two supplied models.</p>
+        <div class="modal-actions">
+          <button class="button quiet" id="cancel-export-button" type="button">Cancel</button>
+          <button class="button primary" id="confirm-export-button" type="submit">Export</button>
+        </div>
+      </form>
+    </section>
     <script src="/assets/app.js" defer></script>
   </body>
 </html>
