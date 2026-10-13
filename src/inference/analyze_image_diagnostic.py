@@ -256,25 +256,29 @@ def run_diagnostic(
     ]
     integrated_full_frame: dict[str, Any] = {"mode": "full_frame", "fish": []}
     try:
-        integrated_results = quality_model.predict_full_frame(
-            image,
-            parents,
-            stabilize=False,
-            frame_id="diagnostic-full-frame",
-        )
-        for parent in parents:
-            observation, bounds = integrated_results[parent.track_id]
-            integrated_full_frame["fish"].append({
-                "fish_index": parent.track_id,
-                "crop_bounds": [bounds.x1, bounds.y1, bounds.x2, bounds.y2],
-                "grade": observation.quality,
-                "quality_confidence": observation.quality_confidence,
-                "reason_codes": observation.analysis.get("reason_codes", []),
-                "observed_regions": observation.analysis.get("observed_regions", []),
-                "part_results": observation.analysis.get("part_results", {}),
-                "model2_debug": observation.analysis.get("model2_debug", {}),
-                "traceability": observation.analysis.get("traceability", {}),
-            })
+        if not parents:
+            report["integrated_full_frame"] = integrated_full_frame
+            parents = []
+        else:
+            integrated_results = quality_model.predict_full_frame(
+                image,
+                parents,
+                stabilize=False,
+                frame_id="diagnostic-full-frame",
+            )
+            for parent in parents:
+                observation, bounds = integrated_results[parent.track_id]
+                integrated_full_frame["fish"].append({
+                    "fish_index": parent.track_id,
+                    "crop_bounds": [bounds.x1, bounds.y1, bounds.x2, bounds.y2],
+                    "grade": observation.quality,
+                    "quality_confidence": observation.quality_confidence,
+                    "reason_codes": observation.analysis.get("reason_codes", []),
+                    "observed_regions": observation.analysis.get("observed_regions", []),
+                    "part_results": observation.analysis.get("part_results", {}),
+                    "model2_debug": observation.analysis.get("model2_debug", {}),
+                    "traceability": observation.analysis.get("traceability", {}),
+                })
     except Exception as exc:
         integrated_full_frame["error"] = str(exc)
         LOGGER.exception("[DIAG] Full-frame association/grading failed: %s", exc)

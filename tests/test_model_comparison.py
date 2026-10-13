@@ -6,6 +6,12 @@ from src.evaluation.comparison_protocol import evaluate_boxes, MODELS, PROTOCOL,
 from src.evaluation.compare_models import load_result, result_path, generate, FIELDS
 from src.preprocessing.dataset_utils import project_root
 
+CANONICAL_DATASET = project_root() / "dataset" / "canonical_v7_parts"
+CANONICAL_DATASET_AVAILABLE = all(
+    (CANONICAL_DATASET / filename).is_file()
+    for filename in ("split_manifest.csv", "data.yaml", "dataset_report.json")
+)
+
 
 class ComparisonTests(unittest.TestCase):
     def setUp(self):
@@ -68,9 +74,13 @@ class ComparisonTests(unittest.TestCase):
         self.assertAlmostEqual(result['overall']['mAP50_95'],.3)
         self.assertEqual(result['overall']['Recall'],0.)
 
+    @unittest.skipUnless(
+        CANONICAL_DATASET_AVAILABLE,
+        "Canonical comparison dataset is not included in this checkout.",
+    )
     def test_generation_missing_and_deterministic(self):
         with tempfile.TemporaryDirectory() as temp:
-            data = project_root()/'dataset/canonical_v7_parts'
+            data = CANONICAL_DATASET
             rows = generate(temp,data,{})
             self.assertEqual(len(rows),3)
             self.assertTrue(all(row['mAP50'] is None for row in rows))
