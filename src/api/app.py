@@ -25,6 +25,7 @@ from src.api.export import DEFAULT_EXPORT_FIELDS, EXPORT_FIELDS, make_csv, make_
 from src.api.runtime import PART_PREVIEW_MODE, resolve_part_weights_path, resolve_runtime_mode
 from src.inference.yolo_fish_detector import YoloFishDetector, resolve_yolo_fish_detector_model_path
 from src.inference.yolo_quality_model import YoloQualityModel, resolve_yolo_quality_model_path
+from src.inference.model_registry import get_model_registry
 from src.inference.part_model import YoloPartModel
 from src.preprocessing.dataset_utils import load_yaml_file, project_root
 
@@ -40,10 +41,13 @@ FISH_DETECTOR_IMAGE_SIZE = int(os.getenv("FISH_DETECTOR_IMAGE_SIZE", "640"))
 FISH_QUALITY_CONFIDENCE = float(os.getenv("FISH_QUALITY_CONFIDENCE", os.getenv("FISH_SEGMENTATION_CONFIDENCE", "0.25")))
 FISH_QUALITY_DEVICE = os.getenv("FISH_QUALITY_DEVICE", os.getenv("FISH_SEGMENTER_DEVICE", FISH_DETECTOR_DEVICE))
 FISH_QUALITY_PATH = resolve_yolo_quality_model_path(REPO_ROOT, os.getenv("FISH_QUALITY_MODEL_PATH", os.getenv("FISH_SEGMENTER_MODEL_PATH")))
-FISH_QUALITY_IMAGE_SIZE = int(os.getenv("FISH_QUALITY_IMAGE_SIZE", "640"))
+_model_registry = get_model_registry()
+_active_model_entry = _model_registry.get_model(_model_registry.get_persisted_model2_id())
+_default_quality_image_size = _active_model_entry.input_size if _active_model_entry is not None else 640
+FISH_QUALITY_IMAGE_SIZE = int(os.getenv("FISH_QUALITY_IMAGE_SIZE", str(_default_quality_image_size)))
 FISH_QUALITY_INTERVAL = int(os.getenv("FISH_QUALITY_INTERVAL", os.getenv("FISH_SEGMENTATION_INTERVAL", "3")))
 FISH_QUALITY_ROI_PADDING = int(os.getenv("FISH_QUALITY_ROI_PADDING", os.getenv("FISH_SEGMENTATION_ROI_PADDING", "0")))
-FISH_QUALITY_INFERENCE_MODE = os.getenv("FISH_QUALITY_INFERENCE_MODE", "crop").strip().lower()
+FISH_QUALITY_INFERENCE_MODE = os.getenv("FISH_QUALITY_INFERENCE_MODE", "full_frame").strip().lower()
 FISH_UPLOAD_MAX_BYTES = int(os.getenv("FISH_UPLOAD_MAX_BYTES", str(10 * 1024 * 1024)))
 FISH_UPLOAD_MAX_DIMENSION = int(os.getenv("FISH_UPLOAD_MAX_DIMENSION", "4096"))
 FISH_UPLOAD_MAX_PIXELS = int(os.getenv("FISH_UPLOAD_MAX_PIXELS", str(16 * 1024 * 1024)))
@@ -86,6 +90,10 @@ else:
         quality_inference_mode=FISH_QUALITY_INFERENCE_MODE,
         roi_padding=FISH_QUALITY_ROI_PADDING,
     )
+    if quality_model.load():
+        state.set_segmenter("ready", quality_model.name, str(quality_model.weights_path), f"Quality Model ready on {quality_model.device}.")
+    else:
+        state.set_segmenter("unavailable", None, str(quality_model.weights_path) if quality_model.weights_path else None, quality_model.error or "Quality Model is unavailable.")
 service = CameraInspectionService(
     state, model, camera_index=CAMERA_INDEX, runtime_mode=RUNTIME_MODE,
     quality_model=quality_model, quality_interval=FISH_QUALITY_INTERVAL,
@@ -202,6 +210,8 @@ def _session_metadata() -> dict[str, object]:
         "model1_sha256": _checkpoint_sha256(model1_path, getattr(model, "checkpoint_sha256", None)),
         "model2_path": str(model2_path) if model2_path else None,
         "model2_sha256": _checkpoint_sha256(model2_path, getattr(quality_model, "checkpoint_sha256", None)),
+        "model2_id": getattr(quality_model, "active_model_id", None),
+        "model2_name": getattr(quality_model, "active_model_name", None),
         "tracker_backend": getattr(model, "tracker_backend", None),
         "grading_config": grading_config,
         "grading_config_hash": grading_config_hash(grading_config),
@@ -221,6 +231,8 @@ def _session_metadata() -> dict[str, object]:
                 "class_names": list(getattr(model, "class_names", ())),
             },
             "model2": {
+                "model_id": getattr(quality_model, "active_model_id", None),
+                "model_name": getattr(quality_model, "active_model_name", None),
                 "image_size": getattr(quality_model, "image_size", FISH_QUALITY_IMAGE_SIZE) if quality_model is not None else None,
                 "device": getattr(quality_model, "device", FISH_QUALITY_DEVICE) if quality_model is not None else None,
                 "detector_confidence_threshold": getattr(quality_model, "confidence_threshold", None) if quality_model is not None else None,
@@ -524,6 +536,20 @@ def _status_payload() -> dict[str, object]:
     snapshot["model_info"]["segmenter"] = snapshot["model_info"]["quality"]
     quality_diagnostics = snapshot["model_info"]["quality"].get("diagnostics", {})
     snapshot["grading_rules"] = quality_diagnostics.get("grading_config", {}) if isinstance(quality_diagnostics, dict) else {}
+    from src.inference.model_registry import get_model_registry
+    registry = get_model_registry()
+    active_m2_id = getattr(quality_model, "active_model_id", None) or registry.get_persisted_model2_id()
+    active_m2_entry = registry.get_model(active_m2_id)
+    snapshot["active_model2_id"] = active_m2_id
+    snapshot["active_model2_name"] = getattr(quality_model, "active_model_name", None) or (active_m2_entry.display_name if active_m2_entry else None)
+    snapshot["available_models"] = [m.to_dict() for m in registry.list_model2_candidates()]
+    snapshot["model_info"]["quality"]["model_id"] = active_m2_id
+    snapshot["model_info"]["quality"]["model_name"] = snapshot["active_model2_name"]
+    snapshot["model_info"]["quality"]["is_loaded"] = bool(
+        (getattr(quality_model, "adapter", None) and quality_model.adapter.is_loaded)
+        or getattr(quality_model, "model", None) is not None
+    )
+    snapshot["model_info"]["quality"]["model_error"] = getattr(quality_model, "error", None)
     snapshot["analytics"] = _analytics(durable_current_events, snapshot)
     snapshot["durable_session"] = {
         "session_id": inspection_sessions.session_id,
@@ -541,6 +567,100 @@ def dashboard() -> FileResponse:
 @app.get("/api/status")
 def get_status() -> dict[str, object]:
     return _status_payload()
+
+
+@app.get("/api/models")
+def list_available_models() -> dict[str, object]:
+    """Return all models in the central registry with their verified tasks and availability."""
+    from src.inference.model_registry import get_model_registry
+
+    registry = get_model_registry()
+    active_m2_id = getattr(quality_model, "active_model_id", None) or registry.get_persisted_model2_id()
+    models_list = []
+    for entry in registry.list_models():
+        item = entry.to_dict()
+        item["is_active"] = bool(
+            (entry.role == "model1_fish_detector" and entry.id == registry.get_default_model1_id())
+            or (entry.role in {"model2_part_quality", "part_preview"} and entry.id == active_m2_id)
+        )
+        item["is_loaded"] = bool(
+            item["is_active"]
+            and (
+                (entry.role == "model1_fish_detector" and getattr(model, "model", None) is not None)
+                or (
+                    entry.role in {"model2_part_quality", "part_preview"}
+                    and quality_model is not None
+                    and (
+                        (getattr(quality_model, "adapter", None) and quality_model.adapter.is_loaded)
+                        or getattr(quality_model, "model", None) is not None
+                    )
+                )
+            )
+        )
+        models_list.append(item)
+    return {
+        "models": models_list,
+        "active_model1_id": registry.get_default_model1_id(),
+        "active_model2_id": active_m2_id,
+        "default_model2_id": registry.get_default_model2_id(),
+    }
+
+
+@app.post("/api/models/select")
+async def select_model(request: Request) -> dict[str, object]:
+    """Switch the active Model 2 to another validated compatible model checkpoint."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+
+    model_id = body.get("model_id")
+    if not model_id or not isinstance(model_id, str):
+        raise HTTPException(status_code=400, detail="'model_id' string is required.")
+
+    from src.inference.model_registry import get_model_registry
+
+    registry = get_model_registry()
+    entry = registry.get_model(model_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Model ID '{model_id}' was not found in the registry.")
+
+    compatible, reason = registry.validate_compatibility(model_id, "model2_grading")
+    if not compatible:
+        raise HTTPException(
+            status_code=400,
+            detail=reason or f"Model '{model_id}' cannot be used for Model 2 quality inspection.",
+        )
+
+    if quality_model is None:
+        raise HTTPException(status_code=500, detail="Model 2 quality model service is not initialized.")
+
+    try:
+        quality_model.switch_model(model_id)
+        state.set_segmenter(
+            "ready",
+            quality_model.name,
+            str(quality_model.weights_path),
+            f"Quality Model '{quality_model.name}' ready on {quality_model.device}.",
+        )
+        if inspection_sessions.active:
+            rotate_durable_session()
+    except Exception as exc:
+        state.set_segmenter(
+            "error",
+            quality_model.name,
+            str(quality_model.weights_path) if quality_model.weights_path else None,
+            f"Failed to switch to model '{model_id}': {exc}",
+        )
+        raise HTTPException(status_code=500, detail=f"Model switch failed: {exc}") from exc
+
+    return {
+        "success": True,
+        "active_model2_id": quality_model.active_model_id,
+        "active_model2_name": quality_model.name,
+        "checkpoint": str(quality_model.weights_path),
+        **_status_payload(),
+    }
 
 
 @app.post("/api/inspection/start")
@@ -983,6 +1103,46 @@ async def update_settings(request: Request) -> dict[str, object]:
             state.set_display_settings(display)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+    model2_request = payload.get("model2_id") or payload.get("selected_model2")
+    if model2_request is not None:
+        if not isinstance(model2_request, str):
+            raise HTTPException(status_code=422, detail="model2_id must be a string.")
+        if state.snapshot()["inspection_status"] in {"starting", "running"}:
+            raise HTTPException(
+                status_code=409,
+                detail="Stop inspection before switching the active model; active fish must not mix models.",
+            )
+        from src.inference.model_registry import get_model_registry
+
+        registry = get_model_registry()
+        entry = registry.get_model(model2_request)
+        if entry is None:
+            raise HTTPException(status_code=404, detail=f"Model ID '{model2_request}' was not found in the registry.")
+        compatible, reason = registry.validate_compatibility(model2_request, "model2_grading")
+        if not compatible:
+            raise HTTPException(
+                status_code=400,
+                detail=reason or f"Model '{model2_request}' cannot be used for Model 2 quality inspection.",
+            )
+        if quality_model is not None:
+            try:
+                quality_model.switch_model(model2_request)
+                state.set_segmenter(
+                    "ready",
+                    quality_model.name,
+                    str(quality_model.weights_path),
+                    f"Quality Model '{quality_model.name}' ready on {quality_model.device}.",
+                )
+                if inspection_sessions.active:
+                    rotate_durable_session()
+            except Exception as exc:
+                state.set_segmenter(
+                    "error",
+                    quality_model.name,
+                    str(quality_model.weights_path) if quality_model.weights_path else None,
+                    f"Failed to switch to model '{model2_request}': {exc}",
+                )
+                raise HTTPException(status_code=500, detail=f"Model switch failed: {exc}") from exc
     return {"updated": True, **_status_payload()}
 
 
@@ -1080,6 +1240,22 @@ async def analyze_image(request: Request) -> dict[str, object]:
     declared_length = request.headers.get("content-length")
     if declared_length and declared_length.isdigit() and int(declared_length) > FISH_UPLOAD_MAX_BYTES:
         raise HTTPException(status_code=413, detail=f"The uploaded image exceeds the {FISH_UPLOAD_MAX_BYTES} byte limit.")
+    model_override = request.headers.get("x-model-id") or request.query_params.get("model_id")
+    if model_override and quality_model is not None and getattr(quality_model, "active_model_id", None) != model_override:
+        from src.inference.model_registry import get_model_registry
+
+        registry = get_model_registry()
+        compatible, reason = registry.validate_compatibility(model_override, "model2_grading")
+        if not compatible:
+            raise HTTPException(status_code=400, detail=reason or f"Model '{model_override}' is not compatible for image analysis.")
+        quality_model.switch_model(model_override)
+        state.set_segmenter(
+            "ready",
+            quality_model.name,
+            str(quality_model.weights_path),
+            f"Quality Model '{quality_model.name}' ready on {quality_model.device}.",
+        )
+
     try:
         frame = decode_uploaded_image(
             await request.body(),

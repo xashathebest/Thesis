@@ -29,7 +29,8 @@ const elements = {
   slider: $("confidence-slider"), settingsThreshold: $("settings-threshold"), confidenceMinus: $("confidence-minus"), confidencePlus: $("confidence-plus"), resetConfidence: $("reset-confidence-button"),
   qualitySlider: $("quality-confidence-slider"), settingsQualityThreshold: $("settings-quality-threshold"), qualityConfidenceMinus: $("quality-confidence-minus"), qualityConfidencePlus: $("quality-confidence-plus"), resetQualityConfidence: $("reset-quality-confidence-button"),
   detectorModelName: $("detector-model-name"), detectorModelStatus: $("detector-model-status"), detectorCheckpoint: $("detector-checkpoint"), detectorDevice: $("detector-device"), detectorThreshold: $("detector-threshold"),
-  segmenterModelName: $("segmenter-model-name"), segmenterModelStatus: $("segmenter-model-status"), segmenterCheckpoint: $("segmenter-checkpoint"), segmenterDevice: $("segmenter-device"), segmenterInference: $("segmenter-inference"),
+  segmenterModelName: $("segmenter-model-name"), segmenterModelStatus: $("segmenter-model-status"), segmenterCheckpoint: $("segmenter-checkpoint"), segmenterDevice: $("segmenter-device"), segmenterInference: $("segmenter-inference"), segmenterAdapterType: $("segmenter-adapter-type"),
+  modelSelectorLive: $("model-selector-live"), modelStatusPillLive: $("model-status-pill-live"), modelSelectorUpload: $("model-selector-upload"), settingsModel2Selector: $("settings-model2-selector"), modelRegistryGrid: $("model-registry-grid"),
   settingsResolution: $("settings-resolution"), settingsFps: $("settings-fps"), settingsQualityMode: $("settings-quality-mode"), settingsQualityInterval: $("settings-quality-interval"), settingsQualityRoiPadding: $("settings-quality-roi-padding"),
   runtimeDiagnostics: $("runtime-diagnostics"), runtimeDiagnosticsNote: $("runtime-diagnostics-note"), runtimeDiagnosticsValues: $("runtime-diagnostics-values"), debugRuntimeEnabled: $("debug-runtime-enabled"), debugPause: $("debug-pause-button"), hardNegativeList: $("hard-negative-list"),
   debugModel2Raw: $("debug-model2-raw"), debugModel2Associated: $("debug-model2-associated"), debugModel2Rejected: $("debug-model2-rejected"), debugModel2Labels: $("debug-model2-labels"), debugRoiBoundary: $("debug-roi-boundary"),
@@ -64,6 +65,9 @@ let partQualityChart = null;
 let colorTrendChart = null;
 let statusRequestInFlight = false;
 let cameraCalibrationStatus = null;
+let availableModels = [];
+let activeModel2Id = null;
+let modelSwitchInFlight = false;
 const cameraControlTimers = new Map();
 const kpiCards = new Map();
 const featureCards = new Map();
@@ -129,6 +133,16 @@ function renderCamera(data) {
   setCompactStatus(elements.cameraPill, "Camera", titleCase(data.camera_status), data.camera_status);
   const qualityStatus = data.model_info?.quality?.status || data.segmenter_status;
   setCompactStatus(elements.modelPill, "M1 / M2", `${data.model_status === "ready" ? "Ready" : titleCase(data.model_status)} / ${titleCase(qualityStatus)}`, data.model_status === "ready" && qualityStatus === "ready" ? "ready" : qualityStatus);
+  if (elements.modelStatusPillLive && !modelSwitchInFlight) {
+    setCompactStatus(elements.modelStatusPillLive, "M2", titleCase(qualityStatus), qualityStatus);
+  }
+  const policyLocked = Boolean(data.policy_settings_locked ?? running);
+  [elements.modelSelectorLive, elements.settingsModel2Selector].forEach((select) => {
+    if (select) {
+      select.disabled = policyLocked || modelSwitchInFlight;
+      select.title = policyLocked ? "Stop inspection before switching models." : "";
+    }
+  });
   const device = data.model_info?.detector?.device || "—";
   setCompactStatus(elements.devicePill, "Device", String(device).toUpperCase(), device === "cpu" || device === "0" || device === "cuda" ? "healthy" : "neutral");
   elements.inspectionState.className = `inspection-state ${stateClass(inspection)}`;
@@ -201,13 +215,13 @@ function legacyRenderLatestOld(data) {
   elements.decision.className = `decision ${event ? "healthy" : "neutral"}`;
   elements.decision.textContent = event ? event.decision : "WAITING";
   elements.latestFeatures.replaceChildren();
-  latestFeatureRows(event).forEach(([label, value, className]) => {
+  legacyLatestFeatureRows(event).forEach(([label, value, className]) => {
     const row = document.createElement("div"); row.className = "feature-row";
     const name = document.createElement("span"); name.textContent = label;
     const status = document.createElement("b"); status.textContent = value; if (className) status.classList.add(className);
     row.append(name, status); elements.latestFeatures.append(row);
   });
-  appendFullAnalysis(elements.latestFeatures, event);
+  legacyAppendFullAnalysis(elements.latestFeatures, event);
   if (!event) return;
   elements.resultFish.textContent = event.fish_label || `Fish #${event.track_id}`;
   elements.resultLabel.textContent = event.quality || "Ungraded";
@@ -416,9 +430,11 @@ function renderKpis(data) {
   const percentage = (name) => total ? `${((Number(grades[name] || 0) / total) * 100).toFixed(1)}% of inspected fish` : "No fish this session";
   const accepted = Number(grades["Class A"] || 0) + Number(grades["Class B"] || 0) + Number(grades["Class C"] || 0);
   const rejected = Number(grades.Rejected || 0); const live = data.current_detection || data.latest_event;
+  const graded = accepted + rejected;
+  const coverage = total ? `${((graded / total) * 100).toFixed(1)}%` : "-";
   const liveGrade = live ? (aiFinalGrade(live) || "Ungraded") : "-";
   const averageSupport = data.analytics?.average_final_support ?? data.analytics?.average_best_evidence_support;
-  const cards = [["Total fish", total, "Current session", true]];
+  const cards = [["Fish detected", total, "Current session", true], ["Graded fish", graded, `${coverage} grading coverage`, false]];
   Object.entries(grades).forEach(([name, count]) => cards.push([name.replace("Class ", "Grade "), count || 0, percentage(name)]));
   cards.push(
     ["Acceptance rate", total ? `${((accepted / total) * 100).toFixed(1)}%` : "-", "Grade A, B, or C final verdicts"],
@@ -554,6 +570,162 @@ function renderModel(data) {
   const detector = data.model_info?.detector || {}; const segmenter = data.model_info?.quality || {}; const diagnostic = segmenter.diagnostics || {};
   elements.detectorModelName.textContent = detector.name || "Fish detector"; elements.detectorModelStatus.textContent = titleCase(detector.status); elements.detectorCheckpoint.textContent = detector.checkpoint_resolved ? "Resolved" : "Unresolved"; elements.detectorDevice.textContent = detector.device || "—"; elements.detectorThreshold.textContent = formatPercent(Number(detector.confidence_threshold) * 100);
   elements.segmenterModelName.textContent = segmenter.name || "Quality Model"; elements.segmenterModelStatus.textContent = titleCase(segmenter.status); elements.segmenterCheckpoint.textContent = segmenter.checkpoint_resolved ? "Resolved" : "Unresolved"; elements.segmenterDevice.textContent = segmenter.device || "—"; elements.segmenterInference.textContent = diagnostic.last_inference_ms == null ? "No measurement" : `${diagnostic.last_inference_ms} ms`;
+  if (elements.segmenterAdapterType) elements.segmenterAdapterType.textContent = segmenter.adapter_type || diagnostic.adapter_type || "Direct YOLO";
+}
+
+async function loadAvailableModels() {
+  try {
+    const response = await fetch("/api/models");
+    if (!response.ok) return;
+    const data = await response.json();
+    availableModels = data.models || [];
+    if (data.active_model2_id) activeModel2Id = data.active_model2_id;
+    renderModelSelectors();
+    renderModelRegistryCards(availableModels);
+  } catch (_) {}
+}
+
+function renderModelSelectors() {
+  const selects = [elements.modelSelectorLive, elements.modelSelectorUpload, elements.settingsModel2Selector].filter(Boolean);
+  selects.forEach((select) => {
+    select.replaceChildren();
+    availableModels.forEach((m) => {
+      if (m.role === "model1_fish_detector") return;
+      const option = document.createElement("option");
+      option.value = m.id;
+      const isDefault = m.is_default_model2 ? " (Default)" : "";
+      const statusNote = !m.is_compatible_grading ? ` [Incompatible: ${m.incompatibility_reason || "unsupported"}]` : "";
+      option.textContent = `${m.display_name} — ${m.task}${isDefault}${statusNote}`;
+      if (!m.is_compatible_grading) {
+        option.disabled = true;
+      }
+      if (m.id === activeModel2Id) {
+        option.selected = true;
+      }
+      select.append(option);
+    });
+    if (activeModel2Id) select.value = activeModel2Id;
+  });
+}
+
+function renderModelRegistryCards(models) {
+  if (!elements.modelRegistryGrid) return;
+  elements.modelRegistryGrid.replaceChildren();
+  models.forEach((m) => {
+    const card = document.createElement("article");
+    card.className = "glass model-registry-card";
+
+    const header = document.createElement("div");
+    header.className = "model-registry-card-header";
+    const titleWrap = document.createElement("div");
+    const eyebrow = document.createElement("p");
+    eyebrow.className = "eyebrow";
+    eyebrow.textContent = titleCase(m.role || "Model");
+    const h3 = document.createElement("h3");
+    h3.textContent = m.display_name;
+    titleWrap.append(eyebrow, h3);
+
+    const badge = document.createElement("span");
+    if (m.is_active) {
+      badge.className = "model-badge active-badge";
+      badge.textContent = "Active";
+    } else if (m.role === "model1_fish_detector") {
+      badge.className = "model-badge m1-badge";
+      badge.textContent = "Model 1";
+    } else if (m.is_compatible_grading) {
+      badge.className = "model-badge compatible";
+      badge.textContent = "Compatible";
+    } else {
+      badge.className = "model-badge incompatible";
+      badge.textContent = "Incompatible";
+    }
+    header.append(titleWrap, badge);
+
+    const meta = document.createElement("dl");
+    meta.className = "model-meta-list";
+    const addRow = (label, val) => {
+      const row = document.createElement("div");
+      row.append(
+        Object.assign(document.createElement("dt"), { textContent: label }),
+        Object.assign(document.createElement("dd"), { textContent: String(val || "—") })
+      );
+      meta.append(row);
+    };
+    addRow("ID", m.id);
+    addRow("Task", m.task);
+    addRow("Framework", m.framework);
+    addRow("Architecture", m.architecture);
+    addRow("Classes", Array.isArray(m.classes) ? `${m.classes.length} classes` : (m.classes || "—"));
+    addRow("Weights File", m.checkpoint_path ? m.checkpoint_path.split(/[\\/]/).pop() : "—");
+    addRow("Status", m.is_loaded ? "Loaded" : m.is_active ? "Ready" : "Standby");
+
+    card.append(header, meta);
+
+    if (!m.is_compatible_grading && m.incompatibility_reason) {
+      const reasonBox = document.createElement("div");
+      reasonBox.className = "model-incompatible-reason";
+      reasonBox.textContent = `Compatibility note: ${m.incompatibility_reason}`;
+      card.append(reasonBox);
+    }
+
+    if (m.is_compatible_grading && m.role !== "model1_fish_detector") {
+      const actionWrap = document.createElement("div");
+      actionWrap.className = "model-card-action";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = m.is_active ? "button quiet" : "button primary";
+      btn.textContent = m.is_active ? "Active Model 2" : "Select as Model 2";
+      btn.disabled = m.is_active || modelSwitchInFlight;
+      btn.addEventListener("click", () => switchModel(m.id));
+      actionWrap.append(btn);
+      card.append(actionWrap);
+    }
+
+    elements.modelRegistryGrid.append(card);
+  });
+}
+
+async function switchModel(modelId) {
+  if (!modelId || modelSwitchInFlight) return;
+  modelSwitchInFlight = true;
+  if (elements.modelStatusPillLive) {
+    elements.modelStatusPillLive.className = "compact-status warning";
+    elements.modelStatusPillLive.replaceChildren(
+      document.createElement("i"),
+      Object.assign(document.createElement("b"), { textContent: "M2" }),
+      Object.assign(document.createElement("em"), { textContent: "Switching..." })
+    );
+  }
+  try {
+    const response = await fetch("/api/models/select", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model_id: modelId }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+    activeModel2Id = data.active_model2_id;
+    await loadAvailableModels();
+    render(data);
+  } catch (error) {
+    elements.alert.classList.remove("hidden");
+    elements.alertTitle.textContent = "Model switch failed";
+    elements.alertCopy.textContent = "The selected model could not be loaded as Model 2.";
+    elements.alertDetails.textContent = error instanceof Error ? error.message : "Unknown error.";
+    if (activeModel2Id) {
+      [elements.modelSelectorLive, elements.modelSelectorUpload, elements.settingsModel2Selector].forEach((s) => {
+        if (s) s.value = activeModel2Id;
+      });
+    }
+  } finally {
+    modelSwitchInFlight = false;
+    if (latestStatus) {
+      const qualityStatus = latestStatus.model_info?.quality?.status || latestStatus.segmenter_status;
+      if (elements.modelStatusPillLive) {
+        setCompactStatus(elements.modelStatusPillLive, "M2", titleCase(qualityStatus), qualityStatus);
+      }
+    }
+  }
 }
 
 function diagnosticsRow(label, value) {
@@ -641,6 +813,11 @@ function syncSettings(data) {
 
 function render(data) {
   const renderStarted = performance.now(); latestStatus = data; defaultConfidence = Number(data.default_confidence_threshold ?? defaultConfidence); defaultQualityConfidence = Number(data.default_quality_confidence_threshold ?? defaultQualityConfidence); renderAlert(data); renderCamera(data); renderLatest(data); renderKpis(data); renderFeatureCounters(data); renderAnalytics(data.analytics); renderRecent(data.recent_history); renderModel(data); syncSettings(data); renderRuntimeDiagnostics(data);
+  const incomingM2Id = data.active_model2_id || data.model_info?.quality?.model2_id;
+  if (incomingM2Id && incomingM2Id !== activeModel2Id) {
+    activeModel2Id = incomingM2Id;
+    renderModelSelectors();
+  }
   if (data.runtime_diagnostics?.enabled) fetch("/api/debug/frontend-metrics", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ render_ms: performance.now() - renderStarted }) }).catch(() => {});
   if (selectedView === "history") loadHistory();
   else if (selectedView === "review") loadReviewQueue();
@@ -681,13 +858,14 @@ function showView(view) {
   document.querySelectorAll(".nav-item[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   if (view === "history") loadHistory(true);
   if (view === "review") loadReviewQueue(true);
+  if (view === "model") loadAvailableModels();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 function updateScrim() {
   const anyOpen = elements.settingsDrawer.classList.contains("open") || elements.cameraCalibrationDrawer.classList.contains("open") || !elements.exportModal.classList.contains("hidden");
   elements.scrim.classList.toggle("hidden", !anyOpen);
 }
-function openSettings() { elements.settingsDrawer.classList.add("open"); elements.settingsDrawer.setAttribute("aria-hidden", "false"); updateScrim(); }
+function openSettings() { elements.settingsDrawer.classList.add("open"); elements.settingsDrawer.setAttribute("aria-hidden", "false"); updateScrim(); loadAvailableModels(); }
 function closeSettings() { elements.settingsDrawer.classList.remove("open"); elements.settingsDrawer.setAttribute("aria-hidden", "true"); updateScrim(); }
 function openExport() { elements.exportModal.classList.remove("hidden"); updateScrim(); }
 function closeExport() { elements.exportModal.classList.add("hidden"); updateScrim(); }
@@ -889,7 +1067,7 @@ elements.start.addEventListener("click", () => postControl("/api/inspection/star
 elements.reset.addEventListener("click", () => { if (!hasEvents(latestStatus) || window.confirm("Reset this session? Current counters and inspection history will be cleared.")) postControl("/api/session/reset"); });
 elements.uploadMode.addEventListener("click", () => toggleUpload(true)); elements.closeUpload.addEventListener("click", () => toggleUpload(false));
 elements.uploadInput.addEventListener("change", () => { selectedUpload = elements.uploadInput.files?.[0] || null; elements.uploadResults.classList.add("hidden"); if (!selectedUpload) { elements.uploadStatus.textContent = "No image selected"; elements.uploadImage.classList.add("hidden"); elements.analyze.disabled = true; return; } elements.uploadStatus.textContent = "Ready"; elements.uploadNote.textContent = `${selectedUpload.name} is ready for separate local analysis.`; const reader = new FileReader(); reader.onload = () => { elements.uploadImage.src = reader.result; elements.uploadImage.classList.remove("hidden"); }; reader.readAsDataURL(selectedUpload); elements.analyze.disabled = !latestStatus?.upload_analysis_available; });
-elements.analyze.addEventListener("click", async () => { if (!selectedUpload || uploadInFlight) return; uploadInFlight = true; elements.analyze.disabled = true; elements.uploadStatus.textContent = "Analyzing"; elements.uploadNote.textContent = "Running Model 1, then Model 2 on each detected fish crop."; try { const response = await fetch("/api/analyze-image", { method: "POST", headers: { "Content-Type": selectedUpload.type || "application/octet-stream", "X-Filename": selectedUpload.name }, body: selectedUpload }); const payload = await response.json(); if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`); const isPartPreview = payload.analysis_mode === "part_preview"; elements.uploadImage.src = payload.annotated_image; elements.uploadFishCount.textContent = String(isPartPreview ? payload.parts_detected : payload.fish_detected); elements.uploadCountLabel.textContent = isPartPreview ? "Parts detected" : "Fish found"; renderUploadQuality(payload.quality_counters); elements.uploadResults.classList.remove("hidden"); elements.uploadStatus.textContent = "Complete"; elements.uploadNote.textContent = isPartPreview ? "Raw part-preview test complete. It does not create fish counts or live inspection records." : payload.model2_available ? "Model 1 fish detections and Model 2 part/grade evidence are shown." : "Detection complete; the Quality Model is unavailable."; } catch (error) { elements.uploadStatus.textContent = "Error"; elements.uploadNote.textContent = error instanceof Error ? error.message : "Image analysis failed."; } finally { uploadInFlight = false; elements.analyze.disabled = !selectedUpload || !latestStatus?.upload_analysis_available; } });
+elements.analyze.addEventListener("click", async () => { if (!selectedUpload || uploadInFlight) return; uploadInFlight = true; elements.analyze.disabled = true; elements.uploadStatus.textContent = "Analyzing"; elements.uploadNote.textContent = "Running Model 1, then Model 2 on each detected fish crop."; try { const uploadM2 = elements.modelSelectorUpload?.value || activeModel2Id; const headers = { "Content-Type": selectedUpload.type || "application/octet-stream", "X-Filename": selectedUpload.name }; if (uploadM2) headers["X-Model-Id"] = uploadM2; const response = await fetch("/api/analyze-image", { method: "POST", headers, body: selectedUpload }); const payload = await response.json(); if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`); const isPartPreview = payload.analysis_mode === "part_preview"; elements.uploadImage.src = payload.annotated_image; elements.uploadFishCount.textContent = String(isPartPreview ? payload.parts_detected : payload.fish_detected); elements.uploadCountLabel.textContent = isPartPreview ? "Parts detected" : "Fish found"; renderUploadQuality(payload.quality_counters); elements.uploadResults.classList.remove("hidden"); elements.uploadStatus.textContent = "Complete"; elements.uploadNote.textContent = isPartPreview ? "Raw part-preview test complete. It does not create fish counts or live inspection records." : payload.model2_available ? `Model 1 fish detections and Model 2 part/grade evidence shown using ${payload.model2_name || uploadM2}.` : "Detection complete; the Quality Model is unavailable."; } catch (error) { elements.uploadStatus.textContent = "Error"; elements.uploadNote.textContent = error instanceof Error ? error.message : "Image analysis failed."; } finally { uploadInFlight = false; elements.analyze.disabled = !selectedUpload || !latestStatus?.upload_analysis_available; } });
 function renderUploadQuality(counters) { const grid = $("upload-quality-counter-grid"); grid.replaceChildren(); Object.entries(counters || {}).forEach(([name, value]) => { const card = document.createElement("article"); card.className = "feature-counter"; card.append(Object.assign(document.createElement("span"), { textContent: name }), Object.assign(document.createElement("strong"), { textContent: String(value) }), Object.assign(document.createElement("small"), { textContent: "Image analysis only" })); grid.append(card); }); }
 
 ensureHistoryVerdictFilter();
@@ -915,4 +1093,9 @@ Object.entries(overlayControls).forEach(([name, controls]) => controls.forEach((
 document.querySelectorAll("input[name=export-range]").forEach((input) => input.addEventListener("change", () => { elements.dateRange.classList.toggle("hidden", document.querySelector("input[name=export-range]:checked").value !== "custom"); }));
 elements.exportForm.addEventListener("submit", async (event) => { event.preventDefault(); const button = $("confirm-export-button"); const fields = [...document.querySelectorAll(".export-fields input:checked")].map((input) => input.value); if (!fields.length) return; const payload = { format: document.querySelector("input[name=export-format]:checked").value, range: document.querySelector("input[name=export-range]:checked").value, fields, complete_analysis: true, start_date: elements.exportStartDate.value || null, end_date: elements.exportEndDate.value || null }; button.disabled = true; try { const response = await fetch("/api/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); if (!response.ok) { const error = await response.json(); throw new Error(error.detail || "Export failed."); } const blob = await response.blob(); const anchor = document.createElement("a"); const disposition = response.headers.get("content-disposition") || ""; const name = disposition.match(/filename="?([^";]+)"?/)?.[1] || `sardinella_inspection.${payload.format}`; anchor.href = URL.createObjectURL(blob); anchor.download = name; document.body.append(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(anchor.href); closeExport(); } catch (error) { elements.alert.classList.remove("hidden"); elements.alertTitle.textContent = "Export unavailable"; elements.alertCopy.textContent = "Inspection data could not be exported."; elements.alertDetails.textContent = error instanceof Error ? error.message : "Unknown export error."; } finally { button.disabled = false; } });
 
+if (elements.modelSelectorLive) elements.modelSelectorLive.addEventListener("change", (e) => switchModel(e.target.value));
+if (elements.modelSelectorUpload) elements.modelSelectorUpload.addEventListener("change", (e) => switchModel(e.target.value));
+if (elements.settingsModel2Selector) elements.settingsModel2Selector.addEventListener("change", (e) => switchModel(e.target.value));
+
+loadAvailableModels();
 getStatus(); setInterval(getStatus, 900);

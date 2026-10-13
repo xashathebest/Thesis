@@ -11,6 +11,7 @@ import numpy as np
 
 from src.inference.yolo_fish_detector import FishDetection, YoloFishDetector
 from src.inference.yolo_quality_model import FishQualityObservation, YoloQualityModel
+from src.inference.association import ParentAnchor
 from src.inference.part_types import PartDetection
 from src.inference.part_model import YoloPartModel
 from src.inference.preprocessing import (
@@ -130,6 +131,13 @@ class StillImageAnalyzer:
             "model1_checkpoint_sha256": getattr(self.detector, "checkpoint_sha256", None),
             "detection_threshold": getattr(self.detector, "confidence_threshold", None),
         })
+        if self.quality_model is not None:
+            traceability.update({
+                "model2_id": getattr(self.quality_model, "active_model_id", None),
+                "model2_name": getattr(self.quality_model, "active_model_name", getattr(self.quality_model, "name", None)),
+                "model2_checkpoint": self.quality_model.weights_path.name if getattr(self.quality_model, "weights_path", None) else None,
+                "model2_checkpoint_sha256": getattr(self.quality_model, "checkpoint_sha256", None),
+            })
         analysis["traceability"] = traceability
         return {
             "id": fish.index,
@@ -150,6 +158,24 @@ class StillImageAnalyzer:
             raise ImageUploadError(str(exc)) from exc
         detections: list[FishDetection] = self.detector.detect(frame)
         results: list[_UploadFish] = []
+        full_frame_results: dict[int, tuple[FishQualityObservation, CropBounds]] = {}
+        if (
+            isinstance(self.quality_model, YoloQualityModel)
+            and self.quality_model.model is not None
+            and self.quality_model.quality_inference_mode == "full_frame"
+        ):
+            parents = []
+            for index, detection in enumerate(detections, start=1):
+                bounded_parent = clamp_bbox(detection.bbox, frame.shape[1], frame.shape[0])
+                if bounded_parent is not None:
+                    parents.append(ParentAnchor(index, bounded_parent, detection.confidence))
+            if parents:
+                full_frame_results = self.quality_model.predict_full_frame(
+                    frame,
+                    parents,
+                    stabilize=False,
+                    frame_id="still-full-frame",
+                )
         for index, detection in enumerate(detections, start=1):
             bounded = clamp_bbox(detection.bbox, frame.shape[1], frame.shape[0])
             if bounded is None:
@@ -157,18 +183,22 @@ class StillImageAnalyzer:
             quality_result = None
             crop_bounds = None
             if self.quality_model is not None and self.quality_model.model is not None:
-                crop, crop_bounds = crop_fish(frame, bounded, padding=self.roi_padding)
                 if isinstance(self.quality_model, YoloQualityModel):
-                    quality_result = self.quality_model.predict(
-                        crop,
-                        index,
-                        stabilize=False,
-                        frame_id=f"still-{index}",
-                        detection_confidence=detection.confidence,
-                        parent_bbox=bounded,
-                        frame_shape=frame.shape,
-                    )
+                    if self.quality_model.quality_inference_mode == "full_frame":
+                        quality_result, crop_bounds = full_frame_results[index]
+                    else:
+                        crop, crop_bounds = crop_fish(frame, bounded, padding=self.roi_padding)
+                        quality_result = self.quality_model.predict(
+                            crop,
+                            index,
+                            stabilize=False,
+                            frame_id=f"still-{index}",
+                            detection_confidence=detection.confidence,
+                            parent_bbox=bounded,
+                            frame_shape=frame.shape,
+                        )
                 else:  # Compatibility for the prior experimental RF-DETR adapter.
+                    crop, crop_bounds = crop_fish(frame, bounded, padding=self.roi_padding)
                     quality_result = self.quality_model.predict(crop, index)
             fish = _UploadFish(index, bounded, detection.confidence, quality_result, crop_bounds)
             results.append(fish)
@@ -190,6 +220,8 @@ class StillImageAnalyzer:
             "fish_detected": len(results),
             "quality_counters": counts,
             "model2_available": bool(self.quality_model and self.quality_model.model is not None),
+            "model2_id": getattr(self.quality_model, "active_model_id", None),
+            "model2_name": getattr(self.quality_model, "active_model_name", getattr(self.quality_model, "name", None)),
             "fish": [self._fish_payload(fish, frame.shape[1], frame.shape[0]) for fish in results],
             "annotated_image": "data:image/jpeg;base64," + base64.b64encode(encoded.tobytes()).decode("ascii"),
         }

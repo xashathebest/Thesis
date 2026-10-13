@@ -91,6 +91,18 @@ th { color: #8fa7c4; border-color: rgba(139,182,231,.17); }td { color: #b7cbe3; 
 @media (max-width: 800px) { .verdict-evidence-facts, .analysis-data-grid { grid-template-columns: 1fr; }.history-filters { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 @media (max-width: 520px) { .history-filters { grid-template-columns: 1fr; }.manual-review-controls { align-items: stretch; }.manual-review-controls .button { width: 100%; } }
 
+/* Keep the first inspection view compact on narrow desktop columns. */
+.inspection-grid { align-items: start; }
+.latest-card { align-self: start; }
+.video-stage { min-height: 240px; }
+html, body { overflow-x: hidden; }
+@media (max-width: 520px) {
+  .inspection-grid > * { min-width: 0; }
+  .camera-actions-left, .model-selection-cluster { width: 100%; min-width: 0; }
+  .model-selection-cluster { flex-wrap: wrap; justify-content: space-between; }
+  .model-select-dropdown { flex: 1 1 140px; width: 1px; max-width: none; min-width: 0; }
+}
+
 /* Clean white iOS-style glass refresh.  These rules intentionally follow the
    older dark theme so the operator dashboard always opens in white mode. */
 :root {
@@ -435,3 +447,37 @@ td:first-child,
 .research-calibration-section { display: grid; gap: 10px; }.research-calibration-note { margin: 0; color: #71839a; font-size: 10px; line-height: 1.45; }.reference-scene-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }.reference-scene-actions .button, .research-confirm-button { min-height: 34px; padding: 0 8px; font-size: 10px; }.installation-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }.installation-fields label { display: grid; gap: 4px; color: #61768f; font-size: 9px; font-weight: 750; }.installation-fields input { min-width: 0; min-height: 31px; padding: 0 8px; color: #304a65; background: #fff; border: 1px solid rgba(119,151,188,.25); border-radius: 8px; font: inherit; font-size: 10px; }.research-confirm-button { width: 100%; }
 .runtime-diagnostics { display: grid; gap: 12px; margin-top: 18px; padding: 18px; border-color: rgba(202, 152, 62, .35); }.runtime-diagnostics .settings-list { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }.debug-overlay-controls { margin: 0; }.runtime-diagnostics .verdict-summary-row { align-items: center; gap: 10px; }.runtime-diagnostics .verdict-summary-row span { flex: 1; font-size: 10px; }
 @media (max-width: 800px) { .camera-settings-trigger { order: 3; }.camera-head { flex-wrap: wrap; }.camera-readout { margin-left: auto; }.camera-calibration-drawer { top: 8px; right: 8px; bottom: 8px; width: calc(100vw - 16px); } }
+
+/* Final layout guardrails for the operator workspace. */
+.inspection-grid { align-items: start; }
+.latest-card { align-self: start; }
+.video-stage { min-height: 240px; }
+
+/* Model selection & registry styling */
+.camera-actions-left { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.model-selection-cluster { display: inline-flex; align-items: center; gap: 7px; padding: 3px 8px; background: rgba(255, 255, 255, .72); border: 1px solid rgba(135, 172, 219, .32); border-radius: 12px; box-shadow: 0 4px 14px rgba(26, 45, 77, .05); }
+.model-select-label { color: #536b88; font-size: 11px; font-weight: 750; white-space: nowrap; }
+.model-select-dropdown { min-height: 30px; max-width: 280px; padding: 2px 8px; color: #1c3558; background: #fff; border: 1px solid rgba(120, 160, 210, .36); border-radius: 8px; font-size: 11px; font-weight: 650; cursor: pointer; outline: none; transition: border-color .18s ease; }
+.model-select-dropdown:hover { border-color: #2775dd; }
+.model-select-dropdown:focus { border-color: #1760cb; box-shadow: 0 0 0 3px rgba(39, 117, 221, .15); }
+.model-select-dropdown option:disabled { color: #9aa8ba; background: #f5f8fc; }
+
+.model-registry-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; margin-top: 14px; }
+.model-registry-card { display: flex; flex-direction: column; justify-content: space-between; padding: 18px; border-radius: 20px; transition: transform .2s ease, box-shadow .2s ease; }
+.model-registry-card:hover { transform: translateY(-2px); box-shadow: 0 16px 36px rgba(33, 76, 135, .12); }
+.model-registry-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.model-registry-card-header h3 { margin: 0; color: #1e3960; font-size: 14px; font-weight: 750; }
+.model-registry-card-header .eyebrow { margin: 0 0 3px 0; }
+.model-badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 999px; font-size: 9px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
+.model-badge.compatible { color: #1e6d42; background: #eaf8ef; border: 1px solid #bce6cd; }
+.model-badge.active-badge { color: #1456b8; background: #e8f2ff; border: 1px solid #b7d6ff; }
+.model-badge.incompatible { color: #9c5c16; background: #fff5e5; border: 1px solid #f2d4a2; }
+.model-badge.m1-badge { color: #5f3fa8; background: #f3edfc; border: 1px solid #d9c7f6; }
+
+.model-meta-list { display: grid; gap: 0; margin: 0 0 14px 0; }
+.model-meta-list div { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid rgba(137, 179, 226, .16); }
+.model-meta-list dt { color: #768ca8; font-size: 10px; font-weight: 700; }
+.model-meta-list dd { margin: 0; color: #2e4a6e; font-size: 11px; font-weight: 700; text-align: right; word-break: break-all; }
+.model-incompatible-reason { margin: 0 0 12px 0; padding: 8px 10px; color: #925c1b; background: rgba(255, 246, 230, .85); border: 1px solid #f3d9af; border-radius: 9px; font-size: 10px; line-height: 1.4; }
+.model-card-action { display: flex; justify-content: flex-end; margin-top: auto; padding-top: 10px; }
+

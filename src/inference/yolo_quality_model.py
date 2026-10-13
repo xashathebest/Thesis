@@ -64,11 +64,36 @@ class FishQualityObservation:
 
 
 def resolve_yolo_quality_model_path(repo_root: Path, explicit_path: str | Path | None = None) -> Path | None:
-    """Resolve the explicit Model 2 path or the checked-in local layout."""
+    """Resolve explicit path, active persisted model, or default YOLO26m."""
 
     if explicit_path:
         candidate = Path(explicit_path).expanduser()
         return (candidate if candidate.is_absolute() else repo_root / candidate).resolve()
+
+    try:
+        from src.inference.model_registry import ModelRegistry
+
+        registry = ModelRegistry(repo_root=repo_root)
+        active_id = registry.get_persisted_model2_id()
+        active_entry = registry.get_model(active_id)
+        if active_entry is not None:
+            try:
+                resolved = registry.resolve_checkpoint_path(active_entry)
+                if resolved.is_file():
+                    return resolved
+            except Exception:
+                pass
+        default_entry = registry.get_model(registry.get_default_model2_id())
+        if default_entry is not None:
+            try:
+                resolved = registry.resolve_checkpoint_path(default_entry)
+                if resolved.is_file():
+                    return resolved
+            except Exception:
+                pass
+    except Exception as exc:
+        LOGGER.warning("Could not resolve model from registry: %s", exc)
+
     weights = repo_root / "models" / "fish_quality" / "weights"
     preferred = weights / "last.pt"
     if preferred.is_file():
@@ -100,11 +125,17 @@ class YoloQualityModel:
     no mask or untrained defect label is fabricated.
     """
 
-    supports_masks = False
+    @property
+    def supports_masks(self) -> bool:
+        try:
+            from src.inference.model_adapters import YoloSegmentationAdapter
+            return isinstance(self.adapter, YoloSegmentationAdapter)
+        except ImportError:
+            return False
 
     def __init__(
         self,
-        model_path: Path | None,
+        model_path: Path | None = None,
         *,
         confidence_threshold: float = 0.25,
         device: str = "auto",
@@ -113,6 +144,7 @@ class YoloQualityModel:
         grading_engine: WeightedGradingEngine | None = None,
         quality_inference_mode: str = "crop",
         roi_padding: int = 0,
+        model_id: str | None = None,
     ) -> None:
         if not 0.0 <= confidence_threshold <= 1.0:
             raise ValueError("FISH_QUALITY_CONFIDENCE must be between 0 and 1.")
@@ -122,6 +154,27 @@ class YoloQualityModel:
             raise ValueError(f"quality_inference_mode must be one of: {', '.join(QUALITY_INFERENCE_MODES)}.")
         if isinstance(roi_padding, bool) or not isinstance(roi_padding, int) or not 0 <= roi_padding <= MAX_QUALITY_ROI_PADDING:
             raise ValueError(f"roi_padding must be an integer between 0 and {MAX_QUALITY_ROI_PADDING}.")
+        if not model_id:
+            try:
+                from src.inference.model_registry import get_model_registry
+                reg = get_model_registry()
+                model_id = reg.get_persisted_model2_id()
+            except Exception:
+                model_id = "yolo26m_partdet"
+        if model_path is None:
+            repo_root = project_root()
+            if model_id:
+                try:
+                    from src.inference.model_registry import get_model_registry
+                    reg = get_model_registry()
+                    entry = reg.get_model(model_id)
+                    if entry is not None:
+                        model_path = reg.resolve_checkpoint_path(entry)
+                except Exception:
+                    pass
+            if model_path is None:
+                model_path = resolve_yolo_quality_model_path(repo_root)
+
         self.model_path = model_path
         self.confidence_threshold = confidence_threshold
         self.requested_device = device
@@ -155,6 +208,9 @@ class YoloQualityModel:
         self._best_crop_data: dict[int, tuple[np.ndarray, tuple[PartDetection, ...], BestFrameSelection]] = {}
         self._finalized_best_frames: dict[int, dict[str, object]] = {}
         self.model: Any | None = None
+        self.adapter: Any | None = None
+        self.active_model_id: str = model_id or ""
+        self.active_model_name: str = ""
         self.device: str | int = "unresolved"
         self.error: str | None = None
         self.class_names: dict[int, str] = {}
@@ -169,6 +225,8 @@ class YoloQualityModel:
 
     @property
     def name(self) -> str:
+        if self.active_model_name:
+            return self.active_model_name
         checkpoint = self.model_path.name if self.model_path else "checkpoint unresolved"
         return f"YOLO quality part detector ({checkpoint})"
 
@@ -203,7 +261,7 @@ class YoloQualityModel:
         raise YoloQualityModelLoadError("FISH_QUALITY_DEVICE must be 'auto', 'cpu', a CUDA device, or a numeric GPU index.")
 
     def load(self) -> bool:
-        if self.model is not None:
+        if self.model is not None and (self.adapter is None or self.adapter.is_loaded):
             return True
         if self.model_path is None:
             self.error = "Model 2 checkpoint is unresolved. Place last.pt in models/fish_quality/weights/ or set FISH_QUALITY_MODEL_PATH."
@@ -212,32 +270,118 @@ class YoloQualityModel:
             self.error = f"Model 2 checkpoint was not found: {self.model_path}. Set FISH_QUALITY_MODEL_PATH to an existing local checkpoint."
             return False
         try:
-            factory = self._model_factory
-            if factory is None:
-                from ultralytics import YOLO
+            from src.inference.model_registry import get_model_registry
+            from src.inference.model_adapters import create_part_adapter
 
-                factory = YOLO
             self.device = self._resolve_device()
-            model = factory(str(self.model_path))
-            if getattr(model, "task", None) != "detect":
-                raise YoloQualityModelLoadError(f"Model 2 must be a YOLO detection checkpoint, got task={getattr(model, 'task', None)!r}.")
-            mapping = validate_yolo_quality_class_mapping(getattr(model, "names", {}))
+            registry = get_model_registry()
+            entry = None
+            if self.active_model_id:
+                entry = registry.get_model(self.active_model_id)
+            if entry is None:
+                for candidate in registry.list_models():
+                    try:
+                        if registry.resolve_checkpoint_path(candidate) == self.model_path.resolve():
+                            entry = candidate
+                            break
+                    except Exception:
+                        continue
+            if entry is None:
+                from src.inference.model_registry import ModelEntry
+                entry = ModelEntry(
+                    id="custom_model2",
+                    role="model2_part_quality",
+                    display_name=f"Custom ({self.model_path.name})",
+                    name=self.model_path.name,
+                    path=str(self.model_path),
+                    sha256=None,
+                    size_bytes=self.model_path.stat().st_size if self.model_path.exists() else 0,
+                    architecture="YOLO detection",
+                    framework="ultralytics",
+                    task="detect",
+                    input_size=self.image_size,
+                    classes=12,
+                    class_names=dict(SOURCE_CLASSES),
+                    adapter="yolo_detection",
+                )
+
+            adapter = create_part_adapter(entry, self.model_path, model_factory=self._model_factory)
+            if not adapter.load(device=self.device):
+                self.error = adapter.error
+                return False
+
+            self.adapter = adapter
+            self.model = getattr(adapter, "model", adapter)
+            self.active_model_id = entry.id
+            self.active_model_name = entry.display_name
+            self.class_names = dict(SOURCE_CLASSES)
+            self.error = None
+            self.checkpoint_sha256 = shortened_sha256(self.model_path)
+            LOGGER.info(
+                "[MODEL 2] active_model_id=%s requested_device=%s resolved_device=%s class_mapping=%s",
+                self.active_model_id,
+                self.requested_device,
+                self.device,
+                self.class_names,
+            )
+            return True
         except YoloQualityModelLoadError as exc:
             self.error = str(exc)
             return False
         except Exception as exc:
-            self.error = f"Unable to load Model 2 as a local YOLO quality detector. Verify the checkpoint and Ultralytics/PyTorch installation. Details: {exc}"
+            self.error = f"Unable to load Model 2 as a local quality detector. Details: {exc}"
             return False
-        self.model, self.class_names, self.error = model, mapping, None
-        # Hash once after successful initialization for reproducible sessions.
-        self.checkpoint_sha256 = shortened_sha256(self.model_path)
-        LOGGER.info(
-            "[MODEL 2] requested_device=%s resolved_device=%s class_mapping=%s",
-            self.requested_device,
-            self.device,
-            self.class_names,
-        )
-        return True
+
+    def switch_model(self, model_id: str) -> None:
+        """Switch active Model 2 to another validated compatible model checkpoint."""
+        from src.inference.model_registry import get_model_registry
+        from src.inference.model_adapters import create_part_adapter
+
+        registry = get_model_registry()
+        compatible, reason = registry.validate_compatibility(model_id, "model2_grading")
+        if not compatible:
+            raise ValueError(reason or f"Model '{model_id}' is not compatible with Model 2 grading.")
+
+        entry = registry.get_model(model_id)
+        if entry is None:
+            raise ValueError(f"Unknown model ID: {model_id}")
+
+        new_path = registry.resolve_checkpoint_path(entry)
+        if not new_path.is_file():
+            raise FileNotFoundError(f"Model checkpoint not found: {new_path}")
+
+        with self._lock:
+            old_adapter = self.adapter
+            device = self.device if self.device != "unresolved" else self._resolve_device()
+            new_adapter = create_part_adapter(entry, new_path, model_factory=self._model_factory)
+            if not new_adapter.load(device=device):
+                raise RuntimeError(new_adapter.error or f"Failed to load model {model_id}")
+
+            if old_adapter is not None:
+                try:
+                    old_adapter.unload()
+                except Exception as exc:
+                    LOGGER.warning("Could not cleanly unload previous model adapter: %s", exc)
+
+            self.adapter = new_adapter
+            self.model = getattr(new_adapter, "model", new_adapter)
+            self.model_path = new_path
+            self.active_model_id = entry.id
+            self.active_model_name = entry.display_name
+            self.image_size = entry.input_size
+            self.checkpoint_sha256 = shortened_sha256(new_path)
+            self.error = None
+            self.last_raw_parts = ()
+            self.last_selected_parts = ()
+            self._best_crop_data.clear()
+            self._finalized_best_frames.clear()
+            registry.persist_model2_selection(model_id)
+            LOGGER.info("[MODEL 2] Switched active model to: %s (%s)", entry.id, entry.display_name)
+
+    def infer_crop(self, image: np.ndarray) -> list[PartDetection]:
+        """Infer parts for a single image crop without running the grading engine."""
+        selected, _ = self._infer_parts(image)
+        return selected
 
     @staticmethod
     def _part_detections(result: Any, width: int, height: int, threshold: float) -> list[PartDetection]:
@@ -261,31 +405,35 @@ class YoloQualityModel:
 
     def set_debug_raw_output(self, enabled: bool) -> None:
         """Expose low-confidence detector output only for an explicit debug run."""
-
         self.debug_raw_output = bool(enabled)
 
     def _infer_parts(self, image: np.ndarray) -> tuple[list[PartDetection], list[PartDetection]]:
-        """Run exactly one Model 2 detector call and separate raw/selected boxes.
-
-        Normal operation still supplies the configured production confidence to
-        YOLO.  Diagnostic mode requests a low detector floor solely to expose
-        candidates that were rejected before grading; grading continues to use
-        the unchanged configured threshold.
-        """
-
         height, width = image.shape[:2]
+        eval_floor = 0.001 if self.debug_raw_output else self.confidence_threshold
         with self._lock:
-            started = perf_counter()
-            results = self.model.predict(  # type: ignore[union-attr]
-                source=image,
-                conf=0.001 if self.debug_raw_output else self.confidence_threshold,
-                imgsz=self.image_size,
-                device=self.device,
-                verbose=False,
-            )
-            self.last_inference_seconds = perf_counter() - started
-        raw = self._part_detections(results[0], width, height, 0.001 if self.debug_raw_output else self.confidence_threshold) if results else []
-        selected = [part for part in raw if part.confidence >= self.confidence_threshold]
+            if self.adapter is not None and self.adapter.is_loaded:
+                selected, raw = self.adapter.predict(
+                    image=image,
+                    conf_threshold=self.confidence_threshold,
+                    image_size=self.image_size,
+                    debug_raw=self.debug_raw_output,
+                )
+                self.last_inference_seconds = self.adapter.last_inference_seconds
+            elif self.model is not None:
+                started = perf_counter()
+                results = self.model.predict(
+                    source=image,
+                    conf=eval_floor,
+                    imgsz=self.image_size,
+                    device=self.device,
+                    verbose=False,
+                )
+                self.last_inference_seconds = perf_counter() - started
+                raw = self._part_detections(results[0], width, height, eval_floor) if results else []
+                selected = [part for part in raw if part.confidence >= self.confidence_threshold]
+            else:
+                raise YoloQualityModelInferenceError(self.error or "Model 2 is not loaded.")
+
         self.last_raw_parts, self.last_selected_parts = tuple(raw), tuple(selected)
         return selected, raw
 
@@ -361,6 +509,8 @@ class YoloQualityModel:
             ),
         }
         analysis["model2_evidence"] = {
+            "model_id": self.active_model_id or (self.entry.id if hasattr(self, "entry") else None),
+            "model_name": self.active_model_name or self.name,
             "checkpoint_name": self.model_path.name if self.model_path else None,
             "checkpoint_sha256": self.checkpoint_sha256,
             "available": model2_available,
@@ -373,6 +523,8 @@ class YoloQualityModel:
             "note": "Model 2 values are detector evidence/support scores, not calibrated whole-fish class probabilities.",
         }
         analysis["traceability"] = {
+            "model2_id": self.active_model_id or (self.entry.id if hasattr(self, "entry") else None),
+            "model2_name": self.active_model_name or self.name,
             "model2_checkpoint": self.model_path.name if self.model_path else None,
             "model2_checkpoint_sha256": self.checkpoint_sha256,
             "grading_config_version": self._grading_engine.config.config_version,
@@ -663,6 +815,11 @@ class YoloQualityModel:
     def diagnostics(self) -> dict[str, object]:
         return {
             "device": self.device,
+            "active_model_id": self.active_model_id,
+            "active_model_name": self.active_model_name or self.name,
+            "adapter_type": self.adapter.__class__.__name__ if self.adapter else None,
+            "is_loaded": bool(self.adapter and self.adapter.is_loaded or self.model is not None),
+            "model_error": self.error,
             "last_inference_ms": round(self.last_inference_seconds * 1000, 2) if self.last_inference_seconds is not None else None,
             "last_grading_ms": round(self.last_grading_seconds * 1000, 2) if self.last_grading_seconds is not None else None,
             "last_association_ms": round(self.last_association_seconds * 1000, 2) if self.last_association_seconds is not None else None,
