@@ -78,6 +78,18 @@ class YoloPartModel:
         self._model_factory = model_factory
         self._lock = RLock()
 
+    @property
+    def name(self) -> str:
+        """Expose the display name expected by the shared dashboard lifecycle."""
+
+        return f"YOLO part preview ({self.weights_path.name})"
+
+    def reset_tracker(self) -> None:
+        """Support Start/Stop/Reset without introducing tracking in preview mode."""
+
+        # Preview predictions are stateless and deliberately have no fish IDs.
+        return None
+
     def load(self) -> bool:
         if self.model is not None:
             return True

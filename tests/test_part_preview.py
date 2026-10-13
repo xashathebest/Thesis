@@ -183,6 +183,31 @@ class _FakeThread:
 
 class PreviewLifecycleTests(unittest.TestCase):
     @patch("src.api.camera.Thread", _FakeThread)
+    def test_real_preview_adapter_supports_dashboard_start_stop_and_reset(self):
+        """Exercise the actual adapter interface, not only the permissive stub."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            weights = Path(directory) / "preview.pt"
+            weights.touch()
+            model = YoloPartModel(
+                weights,
+                model_factory=lambda _: SimpleNamespace(task="segment", names=dict(SOURCE_CLASSES)),
+            )
+            self.assertTrue(model.load())
+            state = InspectionState(runtime_mode=PART_PREVIEW_MODE)
+            state.set_model("ready", model.name, str(model.weights_path), "Preview ready.")
+            service = CameraInspectionService(state, model, runtime_mode=PART_PREVIEW_MODE)
+            self.assertTrue(service.start())
+            self.assertTrue(service.stop())
+            service.reset_session()
+            snapshot = state.snapshot()
+            self.assertEqual(snapshot["inspection_status"], "stopped")
+            self.assertEqual(snapshot["tracker_status"], "disabled")
+            self.assertEqual(snapshot["counters"]["total"], 0)
+            self.assertEqual(snapshot["recent_history"], [])
+            self.assertIn("preview.pt", snapshot["active_model"])
+
+    @patch("src.api.camera.Thread", _FakeThread)
     def test_preview_start_and_stop_are_idempotent(self):
         state = InspectionState(runtime_mode=PART_PREVIEW_MODE)
         service = CameraInspectionService(state, _PartModel([]), runtime_mode=PART_PREVIEW_MODE)
