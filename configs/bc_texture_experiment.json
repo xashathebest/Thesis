@@ -1,0 +1,10 @@
+{
+  "seed": 42,
+  "minimum_mask_pixels": 500,
+  "texture_features": {
+    "glcm": ["glcm_contrast", "glcm_homogeneity", "glcm_entropy", "glcm_correlation"],
+    "lbp": ["lbp_entropy", "lbp_nonuniform_ratio"],
+    "gradient": ["edge_density_proxy", "mean_gradient_proxy", "gradient_std_proxy", "gradient_p90_proxy"]
+  },
+  "color_features": ["mean_value", "mean_saturation", "mean_lab_l", "mean_lab_a", "mean_lab_b", "specular_ratio_proxy", "yellow_ratio_proxy", "brown_ratio_proxy", "dark_patch_ratio_proxy"]
+}

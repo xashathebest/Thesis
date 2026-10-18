@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 from time import monotonic
@@ -15,6 +16,7 @@ from src.api.camera import CameraInspectionService
 from src.api.domain import Detection, InspectionState, TrackingConfig
 from src.api.runtime_diagnostics import LatestFrameQueue
 from src.inference.grading_engine import GradingConfig, WeightedGradingEngine
+from src.inference.association import ParentAnchor
 from src.inference.yolo_quality_model import YoloQualityModel
 from src.preprocessing.audit_v7_exports import SOURCE_CLASSES
 
@@ -104,6 +106,68 @@ class Model2RuntimeTraceTests(unittest.TestCase):
         self.assertEqual(len(trace["rejected_detections"]), 1)
         self.assertEqual(observation.parts[0].confidence, .90)
         self.assertEqual(self.backend.calls, 1)
+
+    def test_overlapping_unscheduled_fish_remains_an_ownership_competitor(self) -> None:
+        class OverlappingFish(_FishModel):
+            def predict(self, _frame):
+                return [
+                    Detection(0, "Fish", .9, (0, 0, 120, 100), 7),
+                    Detection(0, "Fish", .9, (5, 0, 125, 100), 8),
+                ]
+
+        self.backend.predict = lambda **_kwargs: [SimpleNamespace(names=dict(SOURCE_CLASSES), boxes=[_Box(0, .9, (50, 20, 75, 55))])]
+        service = CameraInspectionService(InspectionState(), OverlappingFish(), quality_model=self.quality, quality_interval=3, quality_inference_mode="full_frame")  # type: ignore[arg-type]
+        service._frame_index = 1
+        service._last_segmented_frame[8] = 1
+        service.process_frame(np.zeros((120, 140, 3), dtype=np.uint8), cv2)
+        self.assertIn(7, service._track_grades)
+        self.assertNotIn(8, service._track_grades)
+        analysis = service._track_grades[7].analysis
+        association = analysis["quality_inference"]["association"]
+        self.assertTrue(association["ambiguous"])
+        self.assertEqual(association["assigned_part_count"], 0)
+        self.assertEqual(association["parts"][0]["status"], "AMBIGUOUS")
+        self.assertIsNone(service._track_grades[7].quality)
+        self.assertNotIn(8, self.quality._grading_engine._tracks)
+
+    def test_finalized_or_untracked_neighbor_remains_an_ownership_competitor(self) -> None:
+        class FishPair(_FishModel):
+            neighbor_id = 8
+            def predict(self, _frame):
+                return [Detection(0, "Fish", .9, (0, 0, 120, 100), 7), Detection(0, "Fish", .9, (5, 0, 125, 100), self.neighbor_id)]
+
+        self.backend.predict = lambda **_kwargs: [SimpleNamespace(names=dict(SOURCE_CLASSES), boxes=[_Box(0, .9, (50, 20, 75, 55))])]
+        for neighbor_id in (8, None):
+            with self.subTest(neighbor_id=neighbor_id):
+                self.quality.reset_tracks()
+                detector = FishPair()
+                detector.neighbor_id = neighbor_id
+                state = InspectionState()
+                service = CameraInspectionService(state, detector, quality_model=self.quality, quality_inference_mode="full_frame")  # type: ignore[arg-type]
+                counted = [{"track_id": 8, "counted": True}] if neighbor_id == 8 else []
+                with patch.object(state.tracking, "active_tracks", return_value=counted):
+                    service.process_frame(np.zeros((120, 140, 3), dtype=np.uint8), cv2)
+                summary = service._track_grades[7].analysis["quality_inference"]["association"]
+                self.assertTrue(summary["ambiguous"])
+                self.assertEqual(summary["assigned_part_count"], 0)
+                self.assertEqual(set(self.quality._grading_engine._tracks), {7})
+
+    def test_full_frame_subset_keeps_ownership_and_crop_coordinates(self) -> None:
+        self.backend.predict = lambda **_kwargs: [SimpleNamespace(names=dict(SOURCE_CLASSES), boxes=[_Box(0, .9, (30, 20, 60, 55)), _Box(0, .9, (150, 20, 180, 55))])]
+        parents = [ParentAnchor(7, (0, 0, 100, 100)), ParentAnchor(8, (120, 0, 220, 100))]
+        frame = np.zeros((120, 240, 3), dtype=np.uint8)
+        all_results = self.quality.predict_full_frame(frame, parents, stabilize=False)
+        subset = self.quality.predict_full_frame(frame, parents, stabilize=False, grade_track_ids={8})
+        self.assertEqual(set(subset), {8})
+        all_fish, all_bounds = all_results[8]
+        selected, bounds = subset[8]
+        self.assertEqual(selected.analysis["quality_inference"]["association"], all_fish.analysis["quality_inference"]["association"])
+        self.assertEqual(bounds, all_bounds)
+        self.assertEqual(selected.parts[0].bbox, (30, 20, 60, 55))
+        self.assertEqual(all_results[7][0].parts[0].bbox, (30, 20, 60, 55))
+        assigned = [item for item in selected.analysis["quality_inference"]["association"]["parts"] if item["track_id"] == 8]
+        self.assertEqual(len(assigned), 1)
+        self.assertEqual(assigned[0]["part"]["bbox"], [150.0, 20.0, 180.0, 55.0])
 
     def test_one_model2_call_per_scheduled_track_frame_and_finalized_track_is_skipped(self) -> None:
         fish = _FishModel()

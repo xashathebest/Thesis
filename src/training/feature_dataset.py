@@ -123,6 +123,8 @@ def load_feature_table(path: Path) -> FeatureTable:
             parsed_values = [_number(row.get(name, "")) for row in rows]
         except ValueError:
             continue
+        if any(np.isinf(value) for value in parsed_values):
+            raise ValueError(f"Feature column {name!r} contains an infinite value.")
         if not any(np.isfinite(value) for value in parsed_values):
             continue
         feature_names.append(name)

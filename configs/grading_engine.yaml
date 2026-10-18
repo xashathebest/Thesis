@@ -21,6 +21,8 @@ grading:
   # the evidence requirements below. 0.50 is configurable rather than claimed
   # to be an optimal scientific threshold.
   final_verdict_threshold: 0.50
+  # Research candidate `two_part_v1` requires Body and (Head or Tail).
+  # Keep `standard` until the team and annotator approve a change.
   grading_mode: standard
   minimum_regions_observed: 1
   minimum_original_weight_coverage: 0.50
@@ -31,9 +33,11 @@ grading:
   # validation, not as an assumed scientific optimum.
   minimum_grade_margin: 0.00
 
-  # Live tracks mean-aggregate strongest per-region/per-grade evidence. A
-  # verdict waits for this many usable observations. Set maximum_grade_stddev
-  # only after validating a stability rule on a suitable dataset.
+  # Live tracks require distinct, quality-usable observations that each meet
+  # the active region, Body and original-weight coverage gates. The window
+  # advances even for empty or unusable candidate frames. Parent/association
+  # uncertainty clears active evidence; later qualifying frames may recover.
+  # maximum_grade_stddev needs validation on a suitable dataset.
   temporal:
     minimum_valid_frames: 2
     temporal_evidence_limit: 120
@@ -73,6 +77,8 @@ grading:
   hsv_adjustment:
     enabled: false
   defect_adjustments_enabled: false
+  # Read-only rectangular ROI color proxies; no texture is calculated without a mask.
+  image_diagnostics_enabled: true
 
 # Save only one selected crop per finalized fish when explicitly enabled.
 storage:

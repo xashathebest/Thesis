@@ -676,23 +676,33 @@ class YoloQualityModel:
         *,
         stabilize: bool = True,
         frame_id: int | str | None = None,
+        grade_track_ids: set[int] | None = None,
     ) -> dict[int, tuple[FishQualityObservation, CropBounds]]:
         """Run Model 2 once on a frame and conservatively assign evidence.
 
-        The returned part boxes remain crop-local to preserve the same renderer
-        and grading input shape used by crop mode.
+        All parents compete for ownership. Only selected track IDs receive
+        observations; by default every parent is graded. Returned part boxes
+        remain crop-local for the renderer and grading input.
         """
 
         if self.model is None:
             raise YoloQualityModelInferenceError(self.error or "Model 2 is not loaded.")
         try:
             frame = validate_image(frame_bgr, name="Quality full frame")
+            parent_ids = [parent.track_id for parent in parents]
+            if len(set(parent_ids)) != len(parent_ids):
+                raise ValueError("Full-frame parent track IDs must be unique.")
+            selected_ids = set(parent_ids) if grade_track_ids is None else set(grade_track_ids)
+            if not selected_ids.issubset(parent_ids):
+                raise ValueError("Every grading track ID must have a visible parent.")
             frame_parts, raw_parts = self._infer_parts(frame)
             association_started = perf_counter()
             associations = associate_parts_to_parents(frame_parts, parents)
             self.last_association_seconds = perf_counter() - association_started
             results: dict[int, tuple[FishQualityObservation, CropBounds]] = {}
             for parent in parents:
+                if parent.track_id not in selected_ids:
+                    continue
                 crop, bounds = crop_fish(frame, parent.bbox, padding=self.roi_padding)
                 raw_crop_parts = [
                     translated

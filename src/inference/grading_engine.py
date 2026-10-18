@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter, deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import perf_counter
 from typing import Iterable, Mapping
@@ -29,6 +29,7 @@ from src.inference.grading_policy import (
     UG_FRAME_QUALITY,
     UG_INSUFFICIENT_COVERAGE,
     UG_INSUFFICIENT_REGIONS,
+    UG_TWO_PART_EVIDENCE,
     UG_LOW_GRADE_SUPPORT,
     UG_LOW_MARGIN,
     UG_MISSING_PART_EVIDENCE,
@@ -112,6 +113,7 @@ class GradingConfig:
     rejected_override_threshold: float | None = None
     color_adjustments_enabled: bool = False
     defect_adjustments_enabled: bool = False
+    image_diagnostics_enabled: bool = True
     # Frame quality gates. They are applied only when explicitly configured.
     use_frame_quality_filter: bool = False
     minimum_detection_confidence: float | None = None
@@ -158,8 +160,10 @@ class GradingConfig:
 
         # Validate every verdict-affecting value in the shared policy object.
         self.to_policy()
-        if self.minimum_track_observations < 1 or self.temporal_evidence_limit < 1:
-            raise ValueError("Temporal evidence limits must be positive.")
+        if not isinstance(self.image_diagnostics_enabled, bool):
+            raise ValueError("image_diagnostics_enabled must be a boolean.")
+        if self.minimum_track_observations < 1 or self.temporal_evidence_limit < self.minimum_track_observations:
+            raise ValueError("The temporal evidence window must contain at least the required number of frames.")
         for name in ("minimum_detection_confidence",):
             value = getattr(self, name)
             if value is not None and (_finite(value) is None or not 0.0 <= float(value) <= 1.0):
@@ -366,6 +370,7 @@ class GradingConfig:
             "rejected_override_threshold": self.rejected_override_threshold,
             "color_adjustments_enabled": self.color_adjustments_enabled,
             "defect_adjustments_enabled": self.defect_adjustments_enabled,
+            "image_diagnostics_enabled": self.image_diagnostics_enabled,
             "frame_quality": {
                 "use_frame_quality_filter": self.use_frame_quality_filter,
                 "minimum_detection_confidence": self.minimum_detection_confidence,
@@ -418,6 +423,7 @@ class FrameEvidence:
     colors: dict[str, dict[str, object]]
     frame_id: int | str | None = None
     frame_quality: dict[str, object] = field(default_factory=dict)
+    candidate_index: int = 0
 
 
 @dataclass
@@ -434,6 +440,10 @@ class _TrackEvidence:
     # distinguish an unavailable detector from an available detector that saw
     # no reliable part boxes.
     model2_available: bool = False
+    quality_usable_count: int = 0
+    historical_uncertainty_counts: Counter[str] = field(default_factory=Counter)
+    seen_frame_ids: set[int | str] = field(default_factory=set)
+    duplicate_frame_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -466,6 +476,7 @@ class FishVerdict:
     adjustments: tuple[dict[str, object], ...]
     override: dict[str, object] | None
     color: dict[str, dict[str, object]]
+    supporting_image_measurements: dict[str, object]
     explanation: tuple[str, ...]
     grading_config: dict[str, object]
 
@@ -505,6 +516,7 @@ class FishVerdict:
             "adjustments": [dict(item) for item in self.adjustments],
             "override": dict(self.override) if self.override else None,
             "color": {region: dict(values) for region, values in self.color.items()},
+            "supporting_image_measurements": dict(self.supporting_image_measurements),
             "explanation": list(self.explanation),
             "grading_config": dict(self.grading_config),
         }
@@ -513,6 +525,8 @@ class FishVerdict:
 def _measurement_payload(image_bgr: np.ndarray, bbox: tuple[float, float, float, float] | None, scope: str) -> dict[str, object]:
     """Return measured HSV values without turning them into quality labels."""
 
+    if not isinstance(image_bgr, np.ndarray) or image_bgr.ndim != 3 or image_bgr.shape[2] != 3 or image_bgr.size == 0:
+        return {"status": "unavailable", "source": scope, "message": "Invalid or empty three-channel image crop"}
     height, width = image_bgr.shape[:2]
     bounded = clamp_bbox(bbox, width, height) if bbox is not None else (0.0, 0.0, float(width), float(height))
     if bounded is None:
@@ -533,11 +547,14 @@ def _measurement_payload(image_bgr: np.ndarray, bbox: tuple[float, float, float,
         "mean_hue_deg": "circular_mean_hue_deg",
         "median_hue_deg": "median_hue_deg",
         "mean_saturation": "mean_saturation",
+        "median_saturation": "median_saturation",
         "mean_value": "mean_value",
+        "median_value": "median_value",
         "yellow_ratio_proxy": "yellow_ratio_proxy",
         "brown_ratio_proxy": "brown_ratio_proxy",
         "dark_patch_ratio_proxy": "dark_patch_ratio_proxy",
         "discoloration_coverage_proxy": "discoloration_coverage_proxy",
+        "specular_ratio_proxy": "specular_ratio_proxy",
     }
     payload: dict[str, object] = {"status": "measured", "source": scope, "roi_bbox": [left, top, right, bottom]}
     for output, source in keys.items():
@@ -596,23 +613,37 @@ class WeightedGradingEngine:
     def _frame_evidence(self, crop_bgr: np.ndarray, parts: Iterable[PartDetection], *, frame_id: int | str | None, frame_quality: Mapping[str, object] | None) -> FrameEvidence:
         hsv_started = perf_counter()
         scores, presence, strongest = calculate_part_scores(parts)
-        colors = {"Whole Fish": _measurement_payload(crop_bgr, None, "Model 1 fish crop rectangular ROI; no segmentation mask")}
-        for region in PART_NAMES:
-            selected = strongest.get(region)
-            colors[region] = (
-                _measurement_payload(crop_bgr, selected.bbox, "Model 2 part-detection bounding box; no segmentation mask")
-                if selected is not None
-                else {"status": "unavailable", "source": "No Model 2 part detection in this frame", "grade_adjustment": 0.0}
-            )
+        if self.config.image_diagnostics_enabled:
+            colors = {"Whole Fish": _measurement_payload(crop_bgr, None, "Model 1 fish crop rectangular ROI; no segmentation mask")}
+            for region in PART_NAMES:
+                selected = strongest.get(region)
+                colors[region] = (
+                    _measurement_payload(crop_bgr, selected.bbox, "Model 2 part-detection bounding box; no segmentation mask")
+                    if selected is not None
+                    else {"status": "unavailable", "source": "No Model 2 part detection in this frame", "grade_adjustment": 0.0}
+                )
+        else:
+            colors = {region: {"status": "unavailable", "source": "Image diagnostics disabled", "grade_adjustment": 0.0} for region in (*PART_NAMES, "Whole Fish")}
         self.last_hsv_processing_seconds = perf_counter() - hsv_started
         return FrameEvidence(scores, presence, colors, frame_id=frame_id, frame_quality=dict(frame_quality or {}))
+
+    def _is_evidence_bearing(self, frame: FrameEvidence) -> bool:
+        """Require the active policy's regional gates in each accepted frame."""
+        observed = {region for region in PART_NAMES if frame.presence_confidence[region] > 0 and frame.presence_confidence[region] >= self.config.minimum_part_confidence}
+        required = set(PART_NAMES) if self.config.grading_mode == "strict" else ({"Body"} if self.config.require_body or self.config.grading_mode == "two_part_v1" else set())
+        return (
+            required.issubset(observed)
+            and (self.config.grading_mode != "two_part_v1" or bool({"Head", "Tail"} & observed))
+            and len(observed) >= self.config.active_minimum_regions()
+            and sum(self.config.weight(region) for region in observed) >= self.config.active_minimum_coverage()
+        )
 
     @staticmethod
     def _aggregate_color(observations: Iterable[dict[str, object]]) -> dict[str, object]:
         values = list(observations)
         measured = [item for item in values if item.get("status") == "measured"]
         if not measured:
-            return {"status": "unavailable", "observations": 0, "grade_adjustment": 0.0}
+            return {"status": "unavailable", "observations": 0, "grade_adjustment": 0.0, "reason": str(values[-1].get("message") or values[-1].get("source") or "No eligible frame") if values else "No eligible frame"}
         result: dict[str, object] = {
             "status": "measured",
             "observations": len(measured),
@@ -620,7 +651,7 @@ class WeightedGradingEngine:
             "grade_adjustment": 0.0,
             "grade_adjustment_reason": "No validated HSV grading rule is active.",
         }
-        for key in ("mean_hue_deg", "median_hue_deg", "mean_saturation", "mean_value", "yellow_ratio_proxy", "brown_ratio_proxy", "dark_patch_ratio_proxy", "discoloration_coverage_proxy"):
+        for key in ("mean_hue_deg", "median_hue_deg", "mean_saturation", "median_saturation", "mean_value", "median_value", "yellow_ratio_proxy", "brown_ratio_proxy", "dark_patch_ratio_proxy", "discoloration_coverage_proxy", "specular_ratio_proxy"):
             result[key] = _safe_mean(item.get(key) for item in measured)
         return result
 
@@ -663,9 +694,10 @@ class WeightedGradingEngine:
             UG_OUT_OF_FRAME: "Reliable part evidence may have been lost because a crop touched a frame boundary.",
             UG_FRAME_QUALITY: "No candidate crop passed the configured frame-quality gate.",
             UG_INSUFFICIENT_REGIONS: f"Fewer than {self.config.active_minimum_regions()} reliable regions were observed.",
+            UG_TWO_PART_EVIDENCE: "The experimental two-part policy also requires reliable Head or Tail evidence.",
             UG_INSUFFICIENT_COVERAGE: (
                 f"Reliable original anatomy-weight coverage was below {self.config.active_minimum_coverage() * 100:.2f}%.") ,
-            UG_TEMPORAL_EVIDENCE: f"At least {self.config.minimum_track_observations} usable tracked observations are required.",
+            UG_TEMPORAL_EVIDENCE: f"At least {self.config.minimum_track_observations} distinct evidence-bearing tracked observations are required.",
             UG_LOW_GRADE_SUPPORT: (
                 f"Highest weighted grade support was {(support or 0.0) * 100:.2f}%, below the "
                 f"{self.config.active_final_threshold() * 100:.2f}% final verdict threshold."),
@@ -693,14 +725,20 @@ class WeightedGradingEngine:
         association_status: str | None = None,
         out_of_frame: bool = False,
         model2_available: bool = True,
+        quality_usable_count: int | None = None,
+        historical_uncertainty_counts: Mapping[str, int] | None = None,
+        duplicate_frame_count: int = 0,
+        evidence_bearing_frame_count: int | None = None,
     ) -> FishVerdict:
         usable_count = len(evidence)
+        quality_count = usable_count if quality_usable_count is None else quality_usable_count
+        evidence_count = usable_count if evidence_bearing_frame_count is None else evidence_bearing_frame_count
         aggregate_scores = {region: _empty_scores() for region in PART_NAMES}
         presence = {region: 0.0 for region in PART_NAMES}
         region_frames_by_name: dict[str, list[FrameEvidence]] = {}
         colors: dict[str, dict[str, object]] = {}
         for region in PART_NAMES:
-            region_frames = [frame for frame in evidence if frame.presence_confidence[region] > 0]
+            region_frames = [frame for frame in evidence if frame.presence_confidence[region] > 0 and frame.presence_confidence[region] >= self.config.minimum_part_confidence]
             region_frames_by_name[region] = region_frames
             if region_frames:
                 presence[region] = _safe_mean(frame.presence_confidence[region] for frame in region_frames) or 0.0
@@ -708,6 +746,29 @@ class WeightedGradingEngine:
                     aggregate_scores[region][grade] = _safe_mean(frame.part_scores[region][grade] for frame in region_frames) or 0.0
             colors[region] = self._aggregate_color(frame.colors[region] for frame in evidence)
         colors["Whole Fish"] = self._aggregate_color(frame.colors["Whole Fish"] for frame in evidence)
+        measurements: dict[str, object] = {}
+        for region in (*PART_NAMES, "Whole Fish"):
+            color = colors[region]
+            measured_frames = [frame for frame in evidence if frame.colors[region].get("status") == "measured"]
+            missing_reason = None if measured_frames else ("diagnostics_disabled" if not self.config.image_diagnostics_enabled else color.get("reason", "no_eligible_measurement"))
+            values = {key: color.get(key) for key in ("mean_hue_deg", "median_hue_deg", "mean_saturation", "median_saturation", "mean_value", "median_value", "yellow_ratio_proxy", "brown_ratio_proxy", "dark_patch_ratio_proxy", "discoloration_coverage_proxy", "specular_ratio_proxy")}
+            measurements[region] = {
+                "status": color.get("status"),
+                "measurement_source": color.get("source") if measured_frames else None,
+                "missing_value_reason": missing_reason,
+                "missing_values": {key: ("hue_undefined_for_achromatic_pixels" if key == "mean_hue_deg" and color.get("mean_saturation") == 0 else "undefined_or_not_measured") for key, value in values.items() if value is None},
+                "frame_rois": [{"frame_id": frame.frame_id, "frame_id_missing_reason": "caller_did_not_supply_frame_id" if frame.frame_id is None else None, "crop_local_bbox": frame.colors[region].get("roi_bbox")} for frame in measured_frames],
+                "values": values,
+            }
+        supporting = {
+            "fish_id": fish_id,
+            "algorithm_version": "rectangular_rgb_hsv_lab_proxies_v1",
+            "used_for_final_grade": False,
+            "enabled": self.config.image_diagnostics_enabled,
+            "aggregation": "arithmetic mean over measured evidence-bearing frames; still images use one frame",
+            "regions": measurements,
+            "texture": {"status": "unavailable", "missing_value_reason": "no_validated_fish_mask_in_runtime"},
+        }
 
         rejected_keys = {str(reason).lower() for reason in rejected_reason_counts}
         inferred_out_of_frame = out_of_frame or any("clipp" in reason or "out_of_frame" in reason for reason in rejected_keys)
@@ -721,7 +782,7 @@ class WeightedGradingEngine:
                 parent_usable=parent_usable,
                 association_status=association_status,
                 model2_available=model2_available,
-                frame_quality_rejected=usable_count == 0 and candidate_frame_count > 0,
+                frame_quality_rejected=quality_count == 0 and candidate_frame_count > 0,
                 out_of_frame=inferred_out_of_frame,
             ),
             policy,
@@ -816,8 +877,12 @@ class WeightedGradingEngine:
         temporal_stability: dict[str, object] = {
             "minimum_valid_frames": self.config.minimum_track_observations,
             "candidate_frame_count": candidate_frame_count,
-            "usable_frame_count": usable_count,
-            "rejected_frame_count": max(0, candidate_frame_count - usable_count),
+            "usable_frame_count": quality_count,
+            "evidence_bearing_frame_count": evidence_count,
+            "evidence_window_candidate_limit": self.config.temporal_evidence_limit,
+            "historical_uncertainty_counts": dict(historical_uncertainty_counts or {}),
+            "duplicate_frame_count": duplicate_frame_count,
+            "rejected_frame_count": max(0, candidate_frame_count - quality_count),
             "rejected_reason_counts": dict(rejected_reason_counts),
             "ready": temporal_ready,
             "winning_grade_max_standard_deviation": max_winner_stddev,
@@ -825,8 +890,9 @@ class WeightedGradingEngine:
         }
         frame_quality = {
             "candidate_frame_count": candidate_frame_count,
-            "usable_frame_count": usable_count,
-            "rejected_frame_count": max(0, candidate_frame_count - usable_count),
+            "usable_frame_count": quality_count,
+            "evidence_bearing_frame_count": evidence_count,
+            "rejected_frame_count": max(0, candidate_frame_count - quality_count),
             "rejected_reason_counts": dict(rejected_reason_counts),
             "latest": dict(latest_frame_quality or {}),
             "model2_available": model2_available,
@@ -845,7 +911,7 @@ class WeightedGradingEngine:
                 temporal_ready=temporal_ready,
                 parent_usable=parent_usable,
                 association_status=association_status,
-                frame_quality_rejected=usable_count == 0 and candidate_frame_count > 0,
+                frame_quality_rejected=quality_count == 0 and candidate_frame_count > 0,
                 out_of_frame=inferred_out_of_frame,
                 model2_available=model2_available,
                 temporal_grade_stddev=max_winner_stddev,
@@ -890,6 +956,8 @@ class WeightedGradingEngine:
         else:
             explanations.append("No Model 2 evidence satisfied the configured part-confidence requirement.")
         explanations.append(reason_text)
+        if self.config.grading_mode == "two_part_v1" and "Body" in available_set and "Tail" in available_set and "Head" not in available_set:
+            explanations.append("Head was not detected; physical head integrity is unverified, and the experimental Body+Tail result is provisional for expert review.")
         explanations.append("HSV metrics are descriptive only; no validated HSV grading adjustment was applied.")
         if self.config.color_adjustments_enabled or self.config.defect_adjustments_enabled:
             explanations.append("A feature-adjustment switch is enabled but no validated adjustment rule is configured; scores remain unchanged.")
@@ -921,6 +989,7 @@ class WeightedGradingEngine:
             adjustments=(),
             override=override,
             color=colors,
+            supporting_image_measurements=supporting,
             explanation=tuple(explanations),
             grading_config=self.config.to_dict(),
         )
@@ -986,25 +1055,47 @@ class WeightedGradingEngine:
                 association_status=inferred_association_status,
                 out_of_frame=inferred_out_of_frame,
                 model2_available=model2_available,
+                evidence_bearing_frame_count=int(usable and model2_available and inferred_parent_usable and str(inferred_association_status or "").strip().lower() not in {"ambiguous", "association_ambiguous"} and self._is_evidence_bearing(frame)),
             )
             self.last_evaluation_seconds = perf_counter() - evaluation_started
             return result
 
         track = self._tracks.setdefault(fish_id, _TrackEvidence(deque(maxlen=self.config.temporal_evidence_limit)))
-        if best_frame is not None:
-            track.best_frame = dict(best_frame)
-        track.candidate_frame_count += 1
-        track.latest_frame_quality = quality_payload
-        track.parent_uncertain = track.parent_uncertain or not inferred_parent_usable
-        track.association_ambiguous = track.association_ambiguous or (
-            str(inferred_association_status or "").strip().lower() in {"ambiguous", "association_ambiguous"}
-        )
-        track.out_of_frame = track.out_of_frame or inferred_out_of_frame
-        track.model2_available = track.model2_available or model2_available
-        if usable:
-            track.usable_frames.append(frame)
+        duplicate = frame_id is not None and frame_id in track.seen_frame_ids
+        if duplicate:
+            track.duplicate_frame_count += 1
         else:
-            track.rejected_reason_counts.update(rejection_reasons or ["frame_quality_rejected"])
+            if frame_id is not None:
+                track.seen_frame_ids.add(frame_id)
+            if best_frame is not None:
+                track.best_frame = dict(best_frame)
+            track.candidate_frame_count += 1
+            track.latest_frame_quality = quality_payload
+            track.parent_uncertain = not inferred_parent_usable
+            track.association_ambiguous = str(inferred_association_status or "").strip().lower() in {"ambiguous", "association_ambiguous"}
+            track.out_of_frame = inferred_out_of_frame
+            track.model2_available = model2_available
+            if usable:
+                track.quality_usable_count += 1
+            else:
+                track.rejected_reason_counts.update(rejection_reasons or ["frame_quality_rejected"])
+            # Uncertain ownership invalidates earlier evidence for the active
+            # decision. Keep counts for audit, then require fresh clear frames.
+            if track.parent_uncertain or track.association_ambiguous or not model2_available:
+                track.usable_frames.clear()
+                if track.parent_uncertain:
+                    track.historical_uncertainty_counts["parent_uncertain"] += 1
+                if track.association_ambiguous:
+                    track.historical_uncertainty_counts["association_ambiguous"] += 1
+                if not model2_available:
+                    track.historical_uncertainty_counts["model2_unavailable"] += 1
+            elif usable and self._is_evidence_bearing(frame):
+                track.usable_frames.append(replace(frame, candidate_index=track.candidate_frame_count))
+            # The window advances on all distinct candidate frames, including
+            # empty and unusable ones, so stale evidence cannot persist forever.
+            oldest = track.candidate_frame_count - self.config.temporal_evidence_limit
+            while track.usable_frames and track.usable_frames[0].candidate_index <= oldest:
+                track.usable_frames.popleft()
         result = self._aggregate(
             fish_id,
             list(track.usable_frames),
@@ -1017,6 +1108,9 @@ class WeightedGradingEngine:
             association_status="ambiguous" if track.association_ambiguous else None,
             out_of_frame=track.out_of_frame,
             model2_available=track.model2_available,
+            quality_usable_count=track.quality_usable_count,
+            historical_uncertainty_counts=track.historical_uncertainty_counts,
+            duplicate_frame_count=track.duplicate_frame_count,
         )
         self.last_evaluation_seconds = perf_counter() - evaluation_started
         return result

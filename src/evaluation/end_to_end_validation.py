@@ -30,6 +30,7 @@ import math
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
 from pathlib import Path
+from statistics import median
 from typing import Any
 
 from src.evaluation.fish_level_validation import (
@@ -271,6 +272,84 @@ def summarize_ungraded_reasons(records: Iterable[Mapping[str, object]]) -> dict[
     }
 
 
+def _extended_fish_metrics(records: list[dict[str, object]], fish_report: Mapping[str, object] | None,
+                           *, protected_report: bool, simulated: bool) -> dict[str, object]:
+    """Summarize recorded fish without upgrading incomplete class coverage."""
+    grades = ("Class A", "Class B", "Class C", "Rejected")
+    if not records or fish_report is None:
+        return {"status": "NOT_RUN", "four_grade_performance_claim_allowed": False,
+                "reason": "No labeled fish records supplied."}
+    truth_counts: Counter[str] = Counter()
+    false_rejected = 0
+    non_rejected = 0
+    latencies = []
+    for record in records:
+        try:
+            truth = normalize_grade(record.get("true_grade", record.get("ground_truth_grade")), allow_ungraded=False)
+            prediction = normalize_grade(_recorded_system_grade(record), allow_ungraded=True)
+        except FishLevelValidationError:
+            continue
+        if truth is None:
+            continue
+        truth_counts[truth] += 1
+        if truth != "Rejected":
+            non_rejected += 1
+            false_rejected += prediction == "Rejected"
+        raw_latency = record.get("latency_ms")
+        if raw_latency is not None and not isinstance(raw_latency, bool):
+            try:
+                latency = float(raw_latency)
+                if math.isfinite(latency) and latency >= 0:
+                    latencies.append(latency)
+            except (TypeError, ValueError):
+                pass
+    missing = [grade for grade in grades if not truth_counts[grade]]
+    matrix = fish_report["confusion_matrix"]["counts"]
+    per_class_f1 = {}
+    for i, grade in enumerate(grades):
+        tp = matrix[i][i]
+        predicted_count = sum(matrix[j][i] for j in range(len(grades)))
+        denominator = truth_counts[grade] + predicted_count
+        per_class_f1[grade] = (2 * tp / denominator) if truth_counts[grade] and denominator else None
+    macro = sum(per_class_f1.values()) / len(grades) if not missing and all(v is not None for v in per_class_f1.values()) else None
+    ordered_latency = sorted(latencies)
+    p95 = ordered_latency[math.ceil(0.95 * len(ordered_latency)) - 1] if ordered_latency else None
+    status = "SIMULATED" if simulated else ("MEASURED" if protected_report else "BLOCKED")
+    return {"status": status, "true_grade_counts": {grade: truth_counts[grade] for grade in grades},
+        "missing_true_grades": missing, "four_grade_performance_claim_allowed": bool(protected_report and not simulated and not missing and not fish_report["input_errors"]),
+        "per_class_f1_including_ungraded": per_class_f1, "macro_f1_including_ungraded": macro,
+        "false_rejected": {"count": false_rejected, "non_rejected_truth_count": non_rejected,
+                           "rate": false_rejected / non_rejected if non_rejected else None},
+        "latency_ms": {"known_count": len(latencies), "median": median(latencies) if latencies else None, "p95_nearest_rank": p95,
+                       "note": "Reported per-fish latency only; measurement scope and method require independent review."},
+        "limitations": ["Class coverage is necessary but does not establish statistical adequacy.",
+                        "Ungraded is counted as a missed automatic grade in these F1 values."]}
+
+
+def _additional_fish_subgroups(records: list[dict[str, object]]) -> dict[str, object]:
+    """Evaluate explicitly recorded subgroup labels, never inferred from predictions."""
+    fields = ("overlap", "partial_visibility", "true_head_state", "true_tail_state", "belly_defect_status", "lighting")
+    result = {}
+    for field in fields:
+        groups: dict[str, list[dict[str, object]]] = defaultdict(list)
+        for record in records:
+            value = record.get(field)
+            if value is not None and str(value).strip():
+                groups[str(value)].append(record)
+        if groups:
+            result[field] = {name: evaluate_fish_level_records(rows) for name, rows in sorted(groups.items())}
+    bc = []
+    for record in records:
+        try:
+            if normalize_grade(record.get("true_grade", record.get("ground_truth_grade")), allow_ungraded=False) in {"Class B", "Class C"}:
+                bc.append(record)
+        except FishLevelValidationError:
+            continue
+    if bc:
+        result["B_vs_C_truth"] = evaluate_fish_level_records(bc)
+    return result
+
+
 def _integer(value: object, *, field: str) -> int:
     if isinstance(value, bool):
         raise EndToEndValidationError(f"{field} must be a non-negative integer.")
@@ -458,6 +537,8 @@ def evaluate_end_to_end_manifest(manifest: Mapping[str, object]) -> dict[str, ob
         subset = str(record.get("subset") or "all").strip() or "all"
         fish_by_subset[subset].append(record)
 
+    fish_report = evaluate_fish_level_records(fish_values) if fish_values else None
+    metadata = dict(manifest.get("metadata") or {}) if isinstance(manifest.get("metadata"), Mapping) else {}
     return {
         "scope": "future_labeled_end_to_end_study",
         "report_class": reporting_guard["approved_report_class"],
@@ -466,7 +547,10 @@ def evaluate_end_to_end_manifest(manifest: Mapping[str, object]) -> dict[str, ob
         "parent_detection": _component_metrics(manifest.get("parent_detection_metrics"), component="parent_detection_metrics"),
         "counting": evaluate_counting_records(counting_raw),
         "model2": _component_metrics(manifest.get("model2_metrics"), component="model2_metrics"),
-        "fish_level": evaluate_fish_level_records(fish_values) if fish_values else None,
+        "fish_level": fish_report,
+        "extended_fish_metrics": _extended_fish_metrics(fish_values, fish_report, protected_report=protected_report,
+                                                          simulated=metadata.get("data_kind") == "SIMULATED"),
+        "fish_level_by_recorded_subgroup": _additional_fish_subgroups(fish_values),
         "fish_level_by_subset": {
             name: evaluate_fish_level_records(rows)
             for name, rows in sorted(fish_by_subset.items())
@@ -479,7 +563,7 @@ def evaluate_end_to_end_manifest(manifest: Mapping[str, object]) -> dict[str, ob
             for name, rows in sorted(fish_by_subset.items())
             if name != "all"
         },
-        "metadata": dict(manifest.get("metadata") or {}) if isinstance(manifest.get("metadata"), Mapping) else {},
+        "metadata": metadata,
         "limitations": [
             "Every reported accuracy metric requires independently labeled truth; Model 2 predictions are never substituted for ground truth.",
             "AP values are accepted only as reports from a labeled component evaluator; this assembler does not recreate AP from dashboard events.",

@@ -1,0 +1,111 @@
+{
+  "status": "BLOCKED",
+  "scope": "preflight inventory, not performance",
+  "seed": null,
+  "files": {
+    "model1": {
+      "path": "C:\\Users\\User\\Downloads\\Thesis\\sardinella-lemuru-ml\\models\\fish_detector\\weights\\model1_fish_parent_detector.pt",
+      "sha256": "87498c748ceceb6ae2198b3216cff79471d08648133e704317bdf25cb3abd60a"
+    },
+    "model2": {
+      "path": "C:\\Users\\User\\Downloads\\Thesis\\sardinella-lemuru-ml\\models\\yolov26\\model2_tamban_yolo26m_partdet_r03_devbest.pt",
+      "sha256": "f74cd336b6ba9274f3bbbad845f64d03d0d4cc78e79cf1c0392d0b07d1d53222"
+    },
+    "grading_config": {
+      "path": "C:\\Users\\User\\Downloads\\Thesis\\sardinella-lemuru-ml\\configs\\grading_engine.yaml",
+      "sha256": "97a213691b87d6ae1c8c0e1087489edce7291d9241771d7295ecde17b5e8edf1"
+    },
+    "existing_audit": {
+      "path": "C:\\Users\\User\\Downloads\\Thesis\\sardinella-lemuru-ml\\results\\stabilization\\dataset_independence_audit.json",
+      "sha256": "cd1223d289e2252fdd62671aad6dfdce5a404964b4706bdb572367bd268570c9"
+    },
+    "coco_test": {
+      "path": "C:\\Users\\User\\Downloads\\Thesis\\sardinella-lemuru-ml\\Dried Fish Quality Grading.v7i.coco-segmentation\\test\\_annotations.coco.json",
+      "sha256": "762ac7674bba5d7758d250299c8c1cf6db6bb4720c3be4a1b27afca3d61438aa"
+    }
+  },
+  "software": {
+    "python": "3.14.6",
+    "numpy": "2.5.1",
+    "opencv-python": "5.0.0.93",
+    "scikit-learn": "1.9.0",
+    "Pillow": "12.3.0",
+    "matplotlib": "3.11.1"
+  },
+  "existing_audit_generated_utc": "2026-09-22T04:17:38.486286+00:00",
+  "existing_audit_independence": {
+    "test": {
+      "confirmed_overlap_groups": 38,
+      "missing_provenance_samples": [],
+      "model_training_lineage_status": "PROVIDED",
+      "reasons": [
+        "Confirmed cross-split lineage overlap in 38 source group(s).",
+        "Requested near-duplicate scan did not complete for every available comparison."
+      ],
+      "status": "FAIL",
+      "unresolved_overlap_groups": 0
+    },
+    "validation": {
+      "confirmed_overlap_groups": 39,
+      "missing_provenance_samples": [],
+      "model_training_lineage_status": "PROVIDED",
+      "reasons": [
+        "Confirmed cross-split lineage overlap in 39 source group(s).",
+        "Requested near-duplicate scan did not complete for every available comparison."
+      ],
+      "status": "FAIL",
+      "unresolved_overlap_groups": 0
+    }
+  },
+  "coco_test_image_count": 17,
+  "coco_test_part_annotation_counts": {
+    "Grade_C_Head": 30,
+    "Grade_C_Body": 43,
+    "Grade_C_Tail": 17,
+    "Rejected_Body": 56,
+    "Rejected_Tail": 28,
+    "Rejected_Head": 47,
+    "Grade_B_Head": 2,
+    "Grade_B_Body": 1,
+    "Grade_B_Tail": 1
+  },
+  "verified_independent_fish_count": null,
+  "metrics": [
+    {
+      "item": "independent_fish_level_study",
+      "status": "BLOCKED",
+      "reason": "No verified independent expert-labeled fish manifest or locked session was supplied."
+    },
+    {
+      "item": "model1_detection_and_counting",
+      "status": "NOT_RUN",
+      "reason": "No independent counting/detection truth was supplied."
+    },
+    {
+      "item": "E0_end_to_end_grading",
+      "status": "NOT_RUN",
+      "reason": "No independent fish-level test was run."
+    },
+    {
+      "item": "E1_E2_fusion_comparison",
+      "status": "BLOCKED",
+      "reason": "No validated same-fish feature artifact and holdout set were supplied."
+    },
+    {
+      "item": "E3_E4_structural_fusion",
+      "status": "BLOCKED",
+      "reason": "Expert structural criteria and validated evidence are unavailable."
+    },
+    {
+      "item": "real_camera_latency",
+      "status": "NOT_RUN",
+      "reason": "No locked real-camera latency study was supplied."
+    }
+  ],
+  "limitations": [
+    "Existing audit is a historical artifact; verify its input paths and hashes before reuse.",
+    "Part annotation counts are not expert fish-level grade counts.",
+    "Available checkpoints and hashes do not establish independent validation.",
+    "No real-data plots or model-performance metrics are produced while blocked."
+  ]
+}

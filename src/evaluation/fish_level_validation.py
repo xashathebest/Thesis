@@ -409,7 +409,7 @@ class EvaluationRules:
             # Explicitly recognized runtime metadata. Offline replay receives
             # already aggregated evidence, so image-stage frame/best-frame
             # controls are preserved for provenance rather than reapplied.
-            "color_adjustments_enabled", "defect_adjustments_enabled",
+            "color_adjustments_enabled", "defect_adjustments_enabled", "image_diagnostics_enabled",
             "deprecated_minimum_final_score_used", "active_final_verdict_threshold",
             "frame_quality", "best_frame", "hsv_adjustment", "storage",
             "weights", "part_weights", "rejected_override", "temporal",

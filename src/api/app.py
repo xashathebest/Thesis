@@ -11,6 +11,7 @@ import subprocess
 from contextlib import asynccontextmanager
 from datetime import datetime
 from time import monotonic, sleep
+from threading import RLock
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -22,10 +23,12 @@ from src.api.database import InspectionDatabase, InspectionSessionContext, gradi
 from src.api.image_analysis import ImageUploadError, PartPreviewImageAnalyzer, StillImageAnalyzer, decode_uploaded_image
 from src.api.domain import FEATURE_CAPABILITIES, QUALITY_COUNTER_NAMES, InspectionState, TrackingConfig
 from src.api.export import DEFAULT_EXPORT_FIELDS, EXPORT_FIELDS, make_csv, make_xlsx
+from src.api.expert_library import router as expert_library_router
 from src.api.runtime import PART_PREVIEW_MODE, resolve_part_weights_path, resolve_runtime_mode
 from src.inference.yolo_fish_detector import YoloFishDetector, resolve_yolo_fish_detector_model_path
 from src.inference.yolo_quality_model import YoloQualityModel, resolve_yolo_quality_model_path
 from src.inference.model_registry import get_model_registry
+from src.inference.structural_evidence import StructuralEvidence, summarize_structural_evidence
 from src.inference.part_model import YoloPartModel
 from src.preprocessing.dataset_utils import load_yaml_file, project_root
 
@@ -33,6 +36,8 @@ from src.preprocessing.dataset_utils import load_yaml_file, project_root
 REPO_ROOT = project_root()
 FRONTEND_DIR = REPO_ROOT / "frontend"
 LOGGER = logging.getLogger(__name__)
+# Serialize inspection start with changes to the shared model or grading policy.
+_model_change_lock = RLock()
 PART_CONFIG = load_yaml_file(REPO_ROOT / "configs" / "yolov8.yaml")
 FISH_DETECTION_CONFIDENCE = float(os.getenv("FISH_DETECTION_CONFIDENCE", "0.5"))
 FISH_DETECTOR_DEVICE = os.getenv("FISH_DETECTOR_DEVICE", "auto")
@@ -321,6 +326,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="Sardinella Lemuru Fish Detection API", version="3.0.0", lifespan=lifespan)
 app.mount("/assets", StaticFiles(directory=FRONTEND_DIR), name="assets")
+app.include_router(expert_library_router)
 
 
 def _feature_counters(events: list[dict[str, object]]) -> dict[str, dict[str, object]]:
@@ -635,6 +641,12 @@ async def select_model(request: Request) -> dict[str, object]:
     if quality_model is None:
         raise HTTPException(status_code=500, detail="Model 2 quality model service is not initialized.")
 
+    with _model_change_lock:
+        _require_inspection_stopped_for_model_change()
+        return _select_model_locked(model_id)
+
+
+def _select_model_locked(model_id: str) -> dict[str, object]:
     try:
         quality_model.switch_model(model_id)
         state.set_segmenter(
@@ -663,12 +675,21 @@ async def select_model(request: Request) -> dict[str, object]:
     }
 
 
+def _require_inspection_stopped_for_model_change() -> None:
+    if state.snapshot()["inspection_status"] in {"starting", "running"}:
+        raise HTTPException(
+            status_code=409,
+            detail="Stop inspection before switching the active model; active fish must not mix models.",
+        )
+
+
 @app.post("/api/inspection/start")
 def start_inspection() -> dict[str, object]:
-    started = service.start()
-    if started:
-        inspection_sessions.start(_session_metadata())
-    return {"started": started, **_status_payload()}
+    with _model_change_lock:
+        started = service.start()
+        if started:
+            inspection_sessions.start(_session_metadata())
+        return {"started": started, **_status_payload()}
 
 
 @app.post("/api/inspection/stop")
@@ -973,6 +994,56 @@ async def review_fish(track_id: int, request: Request) -> dict[str, object]:
     return {"updated": True, "item": item, "review_queue_count": review_queue_count}
 
 
+def _structural_review_event(track_id: int) -> dict[str, object]:
+    for event in _durable_events():
+        if event.get("track_id") == track_id:
+            return event
+    raise HTTPException(status_code=404, detail=f"Fish #{track_id} is not in the current durable session.")
+
+
+@app.get("/api/reviews/{track_id}/structure")
+def get_structural_review(track_id: int) -> dict[str, object]:
+    event = _structural_review_event(track_id)
+    analysis = event.get("analysis") if isinstance(event.get("analysis"), dict) else {}
+    return {"track_id": track_id, "structural_evidence": analysis.get("structural_evidence", summarize_structural_evidence([]))}
+
+
+@app.post("/api/reviews/{track_id}/structure")
+async def add_structural_review(track_id: int, request: Request) -> dict[str, object]:
+    """Append a reported observation without changing the AI or manual grade."""
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="Structural review must be valid JSON.") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Structural review must be a JSON object.")
+    try:
+        source = payload.get("source", "unverified")
+        if not isinstance(source, str) or source not in {"expert_review", "unverified"}:
+            raise ValueError("Manual review cannot certify a verified-detector source.")
+        value = dict(payload)
+        if value.get("observed_at") is None:
+            value["observed_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        observation = StructuralEvidence.from_mapping(value)
+        event = _structural_review_event(track_id)
+        analysis = dict(event.get("analysis")) if isinstance(event.get("analysis"), dict) else {}
+        existing = analysis.get("structural_evidence")
+        old_records = existing.get("records", []) if isinstance(existing, dict) else []
+        if not isinstance(old_records, list) or not all(isinstance(item, dict) for item in old_records):
+            raise ValueError("Stored structural evidence is invalid; manual review is required.")
+        records = [StructuralEvidence.from_mapping(item) for item in old_records]
+        summary = summarize_structural_evidence([*records, observation])
+        analysis["structural_evidence"] = summary
+        updated = {**event, "analysis": analysis}
+        session_id = inspection_sessions.session_id
+        if session_id:
+            inspection_database.upsert_event(session_id, updated)
+        state.tracking.update_event_analysis(track_id, {"structural_evidence": summary})
+        return {"updated": True, "track_id": track_id, "structural_evidence": summary}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @app.get("/api/analytics")
 def get_analytics(
     range_name: str = "current_session",
@@ -1070,6 +1141,11 @@ async def update_settings(request: Request) -> dict[str, object]:
         raise HTTPException(status_code=400, detail="Settings must be valid JSON.") from None
     if not isinstance(payload, dict):
         raise HTTPException(status_code=422, detail="Settings must be a JSON object.")
+    with _model_change_lock:
+        return _update_settings_locked(payload)
+
+
+def _update_settings_locked(payload: dict) -> dict[str, object]:
     detector_setting = payload.get("detection_confidence_threshold", payload.get("confidence_threshold"))
     policy_change_requested = detector_setting is not None or "quality_confidence_threshold" in payload
     if policy_change_requested and state.snapshot()["inspection_status"] in {"starting", "running"}:
@@ -1107,11 +1183,7 @@ async def update_settings(request: Request) -> dict[str, object]:
     if model2_request is not None:
         if not isinstance(model2_request, str):
             raise HTTPException(status_code=422, detail="model2_id must be a string.")
-        if state.snapshot()["inspection_status"] in {"starting", "running"}:
-            raise HTTPException(
-                status_code=409,
-                detail="Stop inspection before switching the active model; active fish must not mix models.",
-            )
+        _require_inspection_stopped_for_model_change()
         from src.inference.model_registry import get_model_registry
 
         registry = get_model_registry()
@@ -1232,7 +1304,7 @@ async def export_history(request: Request) -> Response:
 
 @app.post("/api/analyze-image")
 async def analyze_image(request: Request) -> dict[str, object]:
-    """Analyze one supported still image in memory without touching live state."""
+    """Analyze one image; an optional model override changes the shared model while stopped."""
 
     filename = request.headers.get("x-filename", "")
     if not filename:
@@ -1240,21 +1312,6 @@ async def analyze_image(request: Request) -> dict[str, object]:
     declared_length = request.headers.get("content-length")
     if declared_length and declared_length.isdigit() and int(declared_length) > FISH_UPLOAD_MAX_BYTES:
         raise HTTPException(status_code=413, detail=f"The uploaded image exceeds the {FISH_UPLOAD_MAX_BYTES} byte limit.")
-    model_override = request.headers.get("x-model-id") or request.query_params.get("model_id")
-    if model_override and quality_model is not None and getattr(quality_model, "active_model_id", None) != model_override:
-        from src.inference.model_registry import get_model_registry
-
-        registry = get_model_registry()
-        compatible, reason = registry.validate_compatibility(model_override, "model2_grading")
-        if not compatible:
-            raise HTTPException(status_code=400, detail=reason or f"Model '{model_override}' is not compatible for image analysis.")
-        quality_model.switch_model(model_override)
-        state.set_segmenter(
-            "ready",
-            quality_model.name,
-            str(quality_model.weights_path),
-            f"Quality Model '{quality_model.name}' ready on {quality_model.device}.",
-        )
 
     try:
         frame = decode_uploaded_image(
@@ -1264,6 +1321,27 @@ async def analyze_image(request: Request) -> dict[str, object]:
             max_dimension=FISH_UPLOAD_MAX_DIMENSION,
             max_pixels=FISH_UPLOAD_MAX_PIXELS,
         )
+        model_override = request.headers.get("x-model-id") or request.query_params.get("model_id")
+        if model_override:
+            with _model_change_lock:
+                if quality_model is not None and getattr(quality_model, "active_model_id", None) != model_override:
+                    _require_inspection_stopped_for_model_change()
+                    from src.inference.model_registry import get_model_registry
+
+                    registry = get_model_registry()
+                    compatible, reason = registry.validate_compatibility(model_override, "model2_grading")
+                    if not compatible:
+                        raise HTTPException(status_code=400, detail=reason or f"Model '{model_override}' is not compatible for image analysis.")
+                    quality_model.switch_model(model_override)
+                    state.set_segmenter(
+                        "ready",
+                        quality_model.name,
+                        str(quality_model.weights_path),
+                        f"Quality Model '{quality_model.name}' ready on {quality_model.device}.",
+                    )
+                    if inspection_sessions.active:
+                        rotate_durable_session()
+
         if image_analyzer is not None and model.model is not None:
             return image_analyzer.analyze(frame)
         if upload_test_model is not None and upload_test_model.model is not None and upload_test_analyzer is not None:

@@ -93,6 +93,10 @@
               </span>
               <b>Model</b>
             </button>
+            <button class="nav-item" type="button" data-view="expert" data-tooltip="Expert Validation" aria-label="Expert Validation">
+              <span aria-hidden="true"><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><use href="#icon-review"></use></svg></span>
+              <b>Expert</b>
+            </button>
             <button class="nav-item nav-secondary" type="button" data-anchor="analytics-section" data-tooltip="Analytics" aria-label="Analytics">
               <span aria-hidden="true">
                 <svg class="icon" aria-hidden="true" viewBox="0 0 24 24">
@@ -676,6 +680,35 @@
                 <button class="icon-button" id="review-prev" type="button" aria-label="Previous review page">‹</button>
                 <span id="review-page">Page 1</span>
                 <button class="icon-button" id="review-next" type="button" aria-label="Next review page">›</button>
+              </div>
+            </section>
+          </section>
+          <section class="view hidden" id="view-expert" aria-label="Expert validation library">
+            <div class="view-intro">
+              <p class="eyebrow">RESEARCH DOCUMENTATION</p>
+              <h2>Expert Validation</h2>
+              <p>Consultation clips record what an expert said. They do not prove that a mathematical weighting rule is optimal.</p>
+            </div>
+            <section class="surface expert-workspace">
+              <p>Topics: body emphasis and 50-30-20, missing head, missing tail, belly defects, and A/B/C distinctions.</p>
+              <form id="expert-access-form" class="expert-access-form">
+                <label for="expert-token">Research access token</label>
+                <input id="expert-token" type="password" autocomplete="off" required>
+                <button class="button primary" type="submit">Open library</button>
+              </form>
+              <p id="expert-message" role="status" aria-live="polite">The library is private and disabled until its access and recording scope have been verified.</p>
+              <div id="expert-content" class="hidden">
+                <label for="expert-category">Filter by topic</label>
+                <select id="expert-category">
+                  <option value="">All topics</option>
+                  <option value="body_weighting">Body emphasis / 50-30-20</option>
+                  <option value="missing_head">Physical missing head</option>
+                  <option value="missing_tail">Physical missing tail</option>
+                  <option value="belly_defects">Belly defects</option>
+                  <option value="grade_distinctions">A/B/C distinctions</option>
+                </select>
+                <div id="expert-list" class="expert-list"></div>
+                <article id="expert-detail" class="expert-detail" aria-live="polite"></article>
               </div>
             </section>
           </section>

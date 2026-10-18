@@ -1,0 +1,15 @@
+{
+  "schema_version": "belly-batch-v1",
+  "synthetic_only": true,
+  "example_note": "DUMMY example only; not expert-reviewed data. The image path is an intentionally absent placeholder and must not be treated as a real sample.",
+  "rubric_approval_reference": null,
+  "images": [
+    {"id": "dummy_image", "file_name": "dummy_nonexistent_image.png", "width": 64, "height": 48, "capture_group_id": "dummy_capture", "source_reference": "dummy_source", "consent_reference": "dummy_consent"}
+  ],
+  "fish_instances": [
+    {"id": "dummy_instance", "image_id": "dummy_image", "fish_id": "dummy_fish", "specimen_id": "dummy_specimen"}
+  ],
+  "annotations": [
+    {"id": "dummy_observation", "fish_instance_id": "dummy_instance", "finding_id": "dummy_finding", "reviewer_id": "dummy_reviewer", "reviewed_at": "2000-01-01", "consultation_reference": "dummy_reference", "rubric_id": "tamban-belly-draft-v0.1", "review_status": "pending", "presence": "uncertain", "type": "unknown", "severity": "unknown", "visibility": "unknown", "grade_effect": "pending", "bbox": null, "polygon": null}
+  ]
+}

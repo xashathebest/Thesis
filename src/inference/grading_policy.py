@@ -26,6 +26,7 @@ UG_LOW_MARGIN = "UG_LOW_MARGIN"
 UG_OUT_OF_FRAME = "UG_OUT_OF_FRAME"
 UG_INSUFFICIENT_COVERAGE = "UG_INSUFFICIENT_COVERAGE"
 UG_INSUFFICIENT_REGIONS = "UG_INSUFFICIENT_REGIONS"
+UG_TWO_PART_EVIDENCE = "UG_TWO_PART_EVIDENCE"
 UG_TEMPORAL_EVIDENCE = "UG_TEMPORAL_EVIDENCE"
 UG_FRAME_QUALITY = "UG_FRAME_QUALITY"
 UG_MODEL2_UNAVAILABLE = "UG_MODEL2_UNAVAILABLE"
@@ -83,8 +84,8 @@ class GradingPolicy:
             "minimum_grade_margin",
         ):
             _unit_interval(getattr(self, name), field=name)
-        if self.grading_mode not in {"standard", "strict"}:
-            raise ValueError("grading_mode must be 'standard' or 'strict'.")
+        if self.grading_mode not in {"standard", "strict", "two_part_v1"}:
+            raise ValueError("grading_mode must be 'standard', 'strict', or 'two_part_v1'.")
         for name in ("minimum_regions_observed", "strict_minimum_regions_observed"):
             value = getattr(self, name)
             if not isinstance(value, int) or not 1 <= value <= len(PART_NAMES):
@@ -253,7 +254,7 @@ def grade_fish(input_value: FishGradingInput, policy: GradingPolicy) -> FishPoli
     # whether a caller later relaxes the standard-mode Body requirement.  This
     # makes a frame-edge-clipped Head or Tail an explicit abstention cause
     # rather than a generic low-coverage result.
-    required_regions = PART_NAMES if policy.grading_mode == "strict" else (("Body",) if policy.require_body else ())
+    required_regions = PART_NAMES if policy.grading_mode == "strict" else (("Body",) if policy.require_body or policy.grading_mode == "two_part_v1" else ())
     missing_required_regions = tuple(region for region in required_regions if region not in observed_set)
     if not input_value.parent_usable:
         reasons.append(UG_PARENT_UNCERTAIN)
@@ -271,6 +272,8 @@ def grade_fish(input_value: FishGradingInput, policy: GradingPolicy) -> FishPoli
             reasons.append(UG_MISSING_PART_EVIDENCE)
     if missing_required_regions:
         reasons.append(UG_MISSING_PART_EVIDENCE)
+    if policy.grading_mode == "two_part_v1" and not ({"Head", "Tail"} & observed_set):
+        reasons.append(UG_TWO_PART_EVIDENCE)
     if len(observed) < policy.active_minimum_regions():
         reasons.append(UG_INSUFFICIENT_REGIONS)
     if coverage < policy.active_minimum_coverage():

@@ -54,10 +54,13 @@ def _paired_slices(
     shape: tuple[int, int], delta_row: int, delta_column: int
 ) -> tuple[tuple[slice, slice], tuple[slice, slice]]:
     height, width = shape
-    source_rows = slice(max(0, -delta_row), min(height, height - delta_row))
-    source_columns = slice(max(0, -delta_column), min(width, width - delta_column))
-    target_rows = slice(max(0, delta_row), min(height, height + delta_row))
-    target_columns = slice(max(0, delta_column), min(width, width + delta_column))
+    def interval(size: int, delta: int) -> tuple[slice, slice]:
+        source_start = min(size, max(0, -delta))
+        target_start = min(size, max(0, delta))
+        length = max(0, size - abs(delta))
+        return slice(source_start, source_start + length), slice(target_start, target_start + length)
+    source_rows, target_rows = interval(height, delta_row)
+    source_columns, target_columns = interval(width, delta_column)
     return (source_rows, source_columns), (target_rows, target_columns)
 
 
@@ -215,22 +218,21 @@ def extract_texture_features(
     )
     result["lbp_nonuniform_ratio"] = float(lbp_histogram[9])
 
-    gradient_y, gradient_x = np.gradient(gray)
-    gradient = np.hypot(gradient_x, gradient_y)
     interior = _eroded_interior(binary)
-    if not interior.any():
-        interior = binary
-    fish_gradient = gradient[interior]
+    fish_gradient = np.empty(0, dtype=np.float64)
+    if interior.any():
+        gradient_y, gradient_x = np.gradient(gray)
+        fish_gradient = np.hypot(gradient_x, gradient_y)[interior]
     result.update(
         {
             "texture_interior_pixel_count": int(interior.sum()),
             "edge_density_proxy": float(
-                np.mean(fish_gradient >= settings.edge_gradient_min)
+                np.mean(fish_gradient >= settings.edge_gradient_min) if fish_gradient.size else float("nan")
             ),
-            "mean_gradient_proxy": float(fish_gradient.mean()),
-            "gradient_std_proxy": float(fish_gradient.std()),
-            "gradient_p90_proxy": float(np.percentile(fish_gradient, 90)),
-            "local_edge_variance_proxy": float(np.var(fish_gradient)),
+            "mean_gradient_proxy": float(fish_gradient.mean()) if fish_gradient.size else float("nan"),
+            "gradient_std_proxy": float(fish_gradient.std()) if fish_gradient.size else float("nan"),
+            "gradient_p90_proxy": float(np.percentile(fish_gradient, 90)) if fish_gradient.size else float("nan"),
+            "local_edge_variance_proxy": float(np.var(fish_gradient)) if fish_gradient.size else float("nan"),
         }
     )
     return result

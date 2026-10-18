@@ -58,6 +58,7 @@ EXPORT_FIELDS = {
     "tail_mean_saturation": "Tail Mean Saturation (%)", "tail_mean_value": "Tail Mean Value (%)", "tail_yellow_ratio": "Tail Yellow Proxy (%)",
     "whole_fish_mean_hue": "Whole Fish Mean Hue (deg)", "whole_fish_median_hue": "Whole Fish Median Hue (deg)",
     "whole_fish_mean_saturation": "Whole Fish Mean Saturation (%)", "whole_fish_mean_value": "Whole Fish Mean Value (%)", "whole_fish_yellow_ratio": "Whole Fish Yellow Proxy (%)",
+    "supporting_image_measurements": "Supporting Image Measurements (not used for final grade)",
     "detected_regions": "Raw Model 2 Detected Regions", "model2_classes": "Raw Model 2 Classes",
     "adjustment_applied": "Adjustment Applied", "adjustment_reason": "Adjustment Reason",
     "override_applied": "Rejected Override Applied", "override_reason": "Rejected Override Reason",
@@ -224,6 +225,7 @@ def inspection_row(event: dict[str, object]) -> dict[str, object]:
         "camera_settings_session_reference": event.get("session_id", ""),
         "final_explanation": " ".join(str(item) for item in analysis.get("explanation", ()) if item),
         "processing_time": event.get("processing_time_ms") if event.get("processing_time_ms") is not None else "",
+        "supporting_image_measurements": json.dumps(analysis.get("supporting_image_measurements"), ensure_ascii=False, sort_keys=True, allow_nan=False) if isinstance(analysis.get("supporting_image_measurements"), dict) else "",
     }
     winning_grade = str(final_grade if final_grade != "Ungraded" else (best_grade or ""))
     for region, prefix in (("Body", "body"), ("Head", "head"), ("Tail", "tail")):

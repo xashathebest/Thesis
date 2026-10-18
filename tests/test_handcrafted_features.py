@@ -18,6 +18,7 @@ from src.preprocessing.instance_processing import (
     normalize_masked_instance,
 )
 from src.preprocessing.scientific_image_utils import principal_axes, sha256_file
+from src.preprocessing.scientific_image_utils import PreprocessingError
 
 
 class ColorFeatureTests(unittest.TestCase):
@@ -56,6 +57,37 @@ class TextureAndStructureTests(unittest.TestCase):
         result = extract_structural_features(mask, {})
         self.assertTrue(math.isnan(float(result["annotated_head_present"])))
         self.assertEqual(result["structural_mask_component_count"], 1)
+
+    def test_tiny_masks_do_not_use_background_for_gradients(self) -> None:
+        image = np.full((1, 3, 3), 255, dtype=np.uint8)
+        mask = np.array([[False, True, False]])
+        first = extract_texture_features(image, mask, TextureSettings(glcm_distance=5))
+        second = extract_texture_features(image, mask, TextureSettings(glcm_distance=5))
+        self.assertEqual(first["glcm_valid_pair_count"], 0)
+        self.assertEqual(first["texture_interior_pixel_count"], 0)
+        self.assertTrue(math.isnan(first["edge_density_proxy"]))
+        self.assertTrue(math.isnan(second["edge_density_proxy"]))
+        self.assertTrue(all(not math.isinf(value) for value in first.values() if isinstance(value, float)))
+
+    def test_masked_texture_is_deterministic_and_ignores_changed_background(self) -> None:
+        mask = np.zeros((9, 9), dtype=bool)
+        mask[2:7, 2:7] = True
+        first_image = np.zeros((9, 9, 3), dtype=np.uint8)
+        first_image[mask] = 128
+        second_image = first_image.copy()
+        second_image[~mask] = 255
+        first = extract_texture_features(first_image, mask, TextureSettings())
+        second = extract_texture_features(second_image, mask, TextureSettings())
+        self.assertEqual(first, second)
+        self.assertEqual(first["edge_density_proxy"], 0.0)
+        self.assertTrue(all(not math.isinf(value) for value in first.values() if isinstance(value, float)))
+
+    def test_empty_mask_and_invalid_image_are_rejected(self) -> None:
+        for image in (np.zeros((5, 5), dtype=np.uint8), np.zeros((5, 5, 4), dtype=np.uint8)):
+            with self.assertRaises(PreprocessingError):
+                extract_color_features(image, np.ones((5, 5), dtype=bool), ColorSettings())
+        with self.assertRaises(PreprocessingError):
+            extract_texture_features(np.zeros((5, 5, 3), dtype=np.uint8), np.zeros((5, 5), dtype=bool), TextureSettings())
 
 
 class OrientationTests(unittest.TestCase):

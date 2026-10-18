@@ -160,6 +160,20 @@ class FishLevelValidationTests(unittest.TestCase):
         self.assertEqual(replay_rules.temporal_evidence_limit, 48)
         self.assertAlmostEqual(replay_rules.minimum_grade_margin, .04)
 
+    def test_opt_in_two_part_mode_replays_the_live_policy(self) -> None:
+        config = GradingConfig(grading_mode="two_part_v1", final_verdict_threshold=.25)
+        runtime = WeightedGradingEngine(config).evaluate(
+            7, np.full((32, 64, 3), 100, dtype=np.uint8),
+            [part("Body", "Class A", .87), part("Tail", "Class A", .79)], stabilize=False,
+        )
+        replay = recompute_final_verdict(
+            {"fish_id": "7", "true_grade": "Class A", "analysis": runtime.to_dict()},
+            EvaluationRules.from_mapping(config.to_dict()),
+        )
+        self.assertEqual(replay["final_grade"], runtime.final_grade)
+        self.assertEqual(replay["weighted_scores"], runtime.weighted_scores)
+        self.assertEqual(replay["reason_codes"], list(runtime.reason_codes))
+
     def test_rule_replay_requires_evidence_instead_of_reusing_old_grade(self) -> None:
         with self.assertRaises(FishLevelValidationError):
             recompute_final_verdict(

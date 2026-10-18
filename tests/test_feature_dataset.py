@@ -44,6 +44,16 @@ class FeatureTableTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "batch_id:b1"):
             load_feature_table(path)
 
+    def test_infinite_values_are_not_passed_to_training(self) -> None:
+        path = self._write(HEADER + "i1,s1,b1,Class A,train,true,false,false,0.2,yes,yes\n" + "i2,s2,b2,Class B,validation,true,false,false,inf,no,no\n")
+        with self.assertRaisesRegex(ValueError, "infinite"):
+            load_feature_table(path)
+
+    def test_reviewed_annotations_are_never_predictors(self) -> None:
+        path = self._write(HEADER.rstrip() + ",annotated_head_present,annotated_missing_body_ratio,structural_annotations_complete\n" + "i1,s1,b1,Class A,train,true,false,false,0.2,yes,yes,1,0,1\n")
+        table = load_feature_table(path)
+        self.assertEqual(table.feature_names, ["width_length_ratio", "skeleton_converged"])
+
 
 if __name__ == "__main__":
     unittest.main()

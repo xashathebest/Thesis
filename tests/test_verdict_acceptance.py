@@ -35,6 +35,46 @@ def engine(**overrides: object) -> WeightedGradingEngine:
 
 
 class VerdictAcceptanceTests(unittest.TestCase):
+    def test_opt_in_two_part_policy_keeps_fixed_weights_and_abstains_without_required_parts(self) -> None:
+        candidate = engine(grading_mode="two_part_v1", final_verdict_threshold=.25)
+        body = part("Body", "Class A", .87)
+        head = part("Head", "Class A", .79)
+        tail = part("Tail", "Class A", .79)
+        body_only = candidate.evaluate(1, crop(), [body], stabilize=False)
+        self.assertIsNone(body_only.final_grade)
+        self.assertIn("UG_TWO_PART_EVIDENCE", body_only.reason_codes)
+        no_body = candidate.evaluate(2, crop(), [head, tail], stabilize=False)
+        self.assertIsNone(no_body.final_grade)
+        self.assertIn("UG_MISSING_PART_EVIDENCE", no_body.reason_codes)
+        body_head = candidate.evaluate(3, crop(), [body, head], stabilize=False)
+        self.assertEqual(body_head.final_grade, "Class A")
+        self.assertAlmostEqual(body_head.weighted_scores["Class A"], .672)
+        body_tail = candidate.evaluate(4, crop(), [body, tail], stabilize=False)
+        self.assertEqual(body_tail.final_grade, "Class A")
+        self.assertAlmostEqual(body_tail.weighted_scores["Class A"], .593)
+        self.assertIsNone(body_tail.part_results["Head"]["physical_missing"])
+        self.assertIn("unverified", " ".join(body_tail.explanation))
+        self.assertEqual(body_tail.part_results["Head"]["missing_status"], "unknown_not_observed")
+        baseline = engine(final_verdict_threshold=.25).evaluate(5, crop(), [body], stabilize=False)
+        self.assertEqual(baseline.final_grade, "Class A")
+
+    def test_two_part_policy_still_obeys_thresholds_and_temporal_eligibility(self) -> None:
+        candidate = engine(grading_mode="two_part_v1", minimum_track_observations=2)
+        mixed = [part("Body", "Class B", .90), part("Head", "Class A", .90)]
+        low = candidate.evaluate(1, crop(), mixed, stabilize=False)
+        self.assertIsNone(low.final_grade)
+        self.assertIn("UG_LOW_GRADE_SUPPORT", low.reason_codes)
+        self.assertAlmostEqual(low.weighted_scores["Class B"], .45)
+        weak_head = [part("Body", "Class A", .9), part("Head", "Class A", .20)]
+        self.assertIn("UG_TWO_PART_EVIDENCE", candidate.evaluate(2, crop(), weak_head, stabilize=False).reason_codes)
+        for frame_id in (1, 2):
+            result = candidate.evaluate(3, crop(), [part("Body", "Class A", .9)], stabilize=True, frame_id=frame_id)
+        self.assertEqual(result.temporal_stability["evidence_bearing_frame_count"], 0)
+        self.assertIsNone(result.final_grade)
+        for frame_id in (3, 4):
+            result = candidate.evaluate(3, crop(), [part("Body", "Class A", .9), part("Tail", "Class A", .9)], stabilize=True, frame_id=frame_id)
+        self.assertEqual(result.final_grade, "Class A")
+
     def test_full_strong_evidence_is_automatically_graded(self) -> None:
         verdict = engine().evaluate(1, crop(), [
             part("Body", "Class B", .74), part("Head", "Class B", .70), part("Tail", "Class B", .68),

@@ -449,7 +449,7 @@ class TrackingManager:
                                 quality=track.quality,
                                 quality_confidence=track.quality_confidence,
                                 parts=track.quality_parts,
-                                analysis=self._event_analysis(track),
+                                analysis={**self._event_analysis(track), **({"structural_evidence": event.analysis["structural_evidence"]} if "structural_evidence" in event.analysis else {})},
                             )
                             if event.track_id == track_id
                             else event
@@ -464,7 +464,7 @@ class TrackingManager:
                                 quality=track.quality,
                                 quality_confidence=track.quality_confidence,
                                 parts=track.quality_parts,
-                                analysis=self._event_analysis(track),
+                                analysis={**self._event_analysis(track), **({"structural_evidence": event.analysis["structural_evidence"]} if "structural_evidence" in event.analysis else {})},
                             )
                             if event.track_id == track_id
                             else event

@@ -47,6 +47,7 @@ const viewMeta = {
   history: ["Inspection History", "Current-session fish inspection records"],
   review: ["Review Queue", "Ungraded fish that need an operator decision"],
   model: ["Model", "Local inference availability and operator-safe configuration"],
+  expert: ["Expert Validation", "Private research consultation library"],
 };
 const theme = getComputedStyle(document.documentElement);
 const gradeColors = Object.fromEntries(
@@ -332,9 +333,21 @@ function appendFullAnalysis(container, event) {
   if (bestFrame && typeof bestFrame === "object") appendAnalysisBlock(body, "Best representative frame", (block) => {
     const grid = document.createElement("div"); grid.className = "analysis-data-grid"; addAnalysisDatum(grid, "Frame", bestFrame.best_frame_id ?? bestFrame.frame_id ?? bestFrame.id ?? "-"); addAnalysisDatum(grid, "Frame score", scoreText(bestFrame.best_frame_score ?? bestFrame.score)); addAnalysisDatum(grid, "Sharpness", bestFrame.frame_quality?.sharpness_score ?? bestFrame.sharpness_score ?? "-"); addAnalysisDatum(grid, "Crop", bestFrame.best_crop_path || "Not saved"); block.append(grid);
   });
-  const whole = analysis.color?.["Whole Fish"] || {};
-  appendAnalysisBlock(body, "Color metrics", (block) => {
-    const text = document.createElement("p"); text.textContent = whole.status === "measured" ? `Whole-fish HSV: hue ${Number(whole.mean_hue_deg).toFixed(1)} degrees; saturation ${scoreText(whole.mean_saturation)}; yellow proxy ${scoreText(whole.yellow_ratio_proxy)}. Classification effect: none; no validated HSV rule is active.` : "HSV measurement unavailable for this fish. Classification effect: none."; block.append(text);
+  const supporting = analysis.supporting_image_measurements;
+  appendAnalysisBlock(body, "Supporting Image Measurements", (block) => {
+    const note = document.createElement("p"); note.textContent = "Not used for final grade. These rectangular image regions may include background; no fish mask is available."; block.append(note);
+    if (!supporting || typeof supporting !== "object") { const line = document.createElement("p"); line.textContent = "Measurements are unavailable for this record."; block.append(line); return; }
+    ["Whole Fish", "Body", "Head", "Tail"].forEach((region) => {
+      const item = supporting.regions?.[region] || {}; const values = item.values || {}; const line = document.createElement("p");
+      if (item.status !== "measured") line.textContent = `${region}: unavailable (${item.missing_value_reason || "not measured"}).`;
+      else {
+        const hue = typeof values.mean_hue_deg === "number" && Number.isFinite(values.mean_hue_deg) ? `${values.mean_hue_deg.toFixed(1)}°` : "unavailable";
+        const frames = (item.frame_rois || []).map((frame) => frame.frame_id ?? "unknown").join(", ") || "unknown";
+        line.textContent = `${region}: hue ${hue}; saturation ${scoreText(values.mean_saturation)}; brightness ${scoreText(values.mean_value)}; yellow ${scoreText(values.yellow_ratio_proxy)}; highlight proxy ${scoreText(values.specular_ratio_proxy)}. Source: ${item.measurement_source || "unknown"}; frames: ${frames}.`;
+      }
+      block.append(line);
+    });
+    const texture = document.createElement("p"); texture.textContent = "Masked texture unavailable: no validated fish mask in the live pipeline."; block.append(texture);
   });
   (analysis.explanation || []).forEach((text) => { const line = document.createElement("p"); line.textContent = String(text); body.append(line); });
   details.append(body); container.append(details);
@@ -771,6 +784,7 @@ async function postSettings(payload) {
 
 function showView(view) {
   if (!viewMeta[view]) return;
+  if (selectedView === "expert" && view !== "expert") closeExpertLibrary();
   selectedView = view;
   Object.keys(viewMeta).forEach((name) => $("view-" + name).classList.toggle("hidden", name !== view));
   const [title, subtitle] = viewMeta[view]; elements.pageTitle.textContent = title; elements.pageSubtitle.textContent = subtitle;
@@ -1064,5 +1078,91 @@ elements.debugPause.addEventListener("click", () => postRuntimeDiagnostics({ pau
 Object.entries(overlayControls).forEach(([name, controls]) => controls.filter(Boolean).forEach((control) => control.addEventListener("change", () => setOverlay(name, control.checked))));
 document.querySelectorAll("input[name=export-range]").forEach((input) => input.addEventListener("change", () => { elements.dateRange.classList.toggle("hidden", document.querySelector("input[name=export-range]:checked").value !== "custom"); }));
 elements.exportForm.addEventListener("submit", async (event) => { event.preventDefault(); const button = $("confirm-export-button"); const fields = [...document.querySelectorAll(".export-fields input:checked")].map((input) => input.value); if (!fields.length) return; const payload = { format: document.querySelector("input[name=export-format]:checked").value, range: document.querySelector("input[name=export-range]:checked").value, fields, complete_analysis: true, start_date: elements.exportStartDate.value || null, end_date: elements.exportEndDate.value || null }; button.disabled = true; try { const response = await fetch("/api/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); if (!response.ok) { const error = await response.json(); throw new Error(error.detail || "Export failed."); } const blob = await response.blob(); const anchor = document.createElement("a"); const disposition = response.headers.get("content-disposition") || ""; const name = disposition.match(/filename="?([^";]+)"?/)?.[1] || `sardinella_inspection.${payload.format}`; anchor.href = URL.createObjectURL(blob); anchor.download = name; document.body.append(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(anchor.href); closeExport(); } catch (error) { elements.alert.classList.remove("hidden"); elements.alertTitle.textContent = "Export unavailable"; elements.alertCopy.textContent = "Inspection data could not be exported."; elements.alertDetails.textContent = error instanceof Error ? error.message : "Unknown export error."; } finally { button.disabled = false; } });
+
+const expertState = { token: "", clips: [], controller: null, version: 0, videoUrl: null };
+function closeExpertLibrary() {
+  expertState.version += 1;
+  expertState.controller?.abort(); expertState.controller = null;
+  if (expertState.videoUrl) URL.revokeObjectURL(expertState.videoUrl);
+  expertState.videoUrl = null; expertState.token = ""; expertState.clips = [];
+  $("expert-token").value = ""; $("expert-category").value = "";
+  $("expert-list").replaceChildren(); $("expert-detail").replaceChildren();
+  $("expert-content").classList.add("hidden");
+  $("expert-message").textContent = "The library is private and disabled until its access and recording scope have been verified.";
+}
+function expertText(tag, text) { const element = document.createElement(tag); element.textContent = String(text); return element; }
+function expertTime(value) {
+  const seconds = Math.max(0, Math.floor(Number(value)));
+  return [Math.floor(seconds / 3600), Math.floor(seconds % 3600 / 60), seconds % 60].map((part) => String(part).padStart(2, "0")).join(":");
+}
+function expertRequest(path, token, signal) {
+  return fetch(path, { headers: { Authorization: `Bearer ${token}` }, credentials: "omit", cache: "no-store", signal });
+}
+function renderExpertList() {
+  expertState.controller?.abort(); expertState.controller = null; expertState.version += 1;
+  const list = $("expert-list"); list.replaceChildren(); $("expert-detail").replaceChildren();
+  if (expertState.videoUrl) URL.revokeObjectURL(expertState.videoUrl);
+  expertState.videoUrl = null;
+  const visible = expertState.clips.filter((clip) => !$("expert-category").value || clip.category === $("expert-category").value);
+  if (!visible.length) { list.append(expertText("p", "No clips are available for this topic.")); return; }
+  visible.forEach((clip) => {
+    const button = expertText("button", `${clip.title} · ${clip.validation_status}`);
+    button.type = "button"; button.className = "button quiet";
+    button.addEventListener("click", () => openExpertDetail(clip.id)); list.append(button);
+  });
+}
+async function openExpertDetail(id) {
+  expertState.controller?.abort(); const controller = new AbortController(); expertState.controller = controller;
+  const version = ++expertState.version;
+  try {
+    const response = await expertRequest(`/api/expert-library/clips/${encodeURIComponent(id)}`, expertState.token, controller.signal);
+    if (!response.ok) throw new Error("Clip details are unavailable.");
+    const clip = await response.json(); if (version !== expertState.version) return;
+    const detail = $("expert-detail"); detail.replaceChildren();
+    if (expertState.videoUrl) URL.revokeObjectURL(expertState.videoUrl);
+    expertState.videoUrl = null;
+    detail.append(expertText("h3", clip.title), expertText("p", `Rule: ${clip.rule_id} · ${clip.validation_status}`),
+      expertText("p", `Research question: ${clip.research_question}`),
+      expertText("p", `Consultation: ${clip.consultation_date} · Reviewer: ${clip.reviewer}`),
+      expertText("p", `Original recording: ${clip.original_filename} · ${expertTime(clip.original_start_seconds)}–${expertTime(clip.original_end_seconds)}`),
+      expertText("p", `Clip: ${clip.clipped_filename} · ${clip.clipped_length_seconds} seconds`),
+      expertText("p", `${clip.claim_kind === "exact_quote" ? "Exact expert quote" : "Expert claim (paraphrase)"}: ${clip.claim_text}`));
+    if (clip.researcher_interpretation) detail.append(expertText("p", `Researcher interpretation: ${clip.researcher_interpretation}`));
+    const load = expertText("button", clip.media_available ? "Load authorized clip" : "Clip file unavailable");
+    load.type = "button"; load.className = "button quiet"; load.disabled = !clip.media_available;
+    load.addEventListener("click", () => loadExpertVideo(id, detail, load)); detail.append(load);
+  } catch (error) { if (version === expertState.version && error.name !== "AbortError") $("expert-message").textContent = "Clip details are unavailable."; }
+}
+async function loadExpertVideo(id, detail, button) {
+  expertState.controller?.abort(); const controller = new AbortController(); expertState.controller = controller;
+  const version = ++expertState.version; button.disabled = true;
+  try {
+    const response = await expertRequest(`/api/expert-library/clips/${encodeURIComponent(id)}/media`, expertState.token, controller.signal);
+    if (!response.ok) throw new Error("Clip unavailable");
+    const blob = await response.blob(); if (version !== expertState.version) return;
+    if (expertState.videoUrl) URL.revokeObjectURL(expertState.videoUrl);
+    expertState.videoUrl = URL.createObjectURL(blob);
+    const video = document.createElement("video"); video.controls = true; video.preload = "metadata"; video.src = expertState.videoUrl;
+    detail.append(video); button.remove();
+  } catch (error) { if (version === expertState.version && error.name !== "AbortError") { button.disabled = false; $("expert-message").textContent = "Clip file is unavailable."; } }
+}
+$("expert-access-form").addEventListener("submit", async (event) => {
+  event.preventDefault(); const token = $("expert-token").value; $("expert-token").value = "";
+  expertState.controller?.abort(); const controller = new AbortController(); expertState.controller = controller;
+  const version = ++expertState.version;
+  try {
+    const response = await expertRequest("/api/expert-library/clips", token, controller.signal);
+    if (!response.ok) throw new Error("Access unavailable");
+    const data = await response.json(); if (version !== expertState.version) return;
+    expertState.token = token; expertState.clips = Array.isArray(data.clips) ? data.clips : [];
+    $("expert-content").classList.remove("hidden"); $("expert-message").textContent = "Authorized local research view.";
+    renderExpertList();
+  } catch (error) {
+    if (version === expertState.version && error.name !== "AbortError") {
+      closeExpertLibrary(); $("expert-message").textContent = "Library unavailable or access denied.";
+    }
+  }
+});
+$("expert-category").addEventListener("change", renderExpertList);
 
 getStatus(); setInterval(getStatus, 900);

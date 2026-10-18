@@ -1,0 +1,15 @@
+# B/C masked texture study — NOT VALIDATED
+
+No suitable independent, expert-reviewed, specimen-linked B/C data with validated masks and aligned Model 2 outputs were established in the examined files. See [the color dataset audit](bc_color_experiment.md) for actual annotation and photo counts. There are no real-data texture metrics, ablation findings, false-positive galleries, or grounds to trial texture in fusion. **Recommendation: keep these as offline diagnostics and test further with reviewed fish-level data.**
+
+`src/evaluation/bc_texture_experiment.py` is a testable offline experiment scaffold using the reviewed manifest schema and split checks described in the color study. `configs/bc_texture_experiment.json` predefines GLCM, LBP, gradient, and color descriptors and seed 42. It records native crop dimensions, hashes, mask pixels and valid-pair/interior counts; image/mask shape mismatch, small masks and undefined outputs are excluded with explicit reasons. The grayscale conversion is `0.2126R + 0.7152G + 0.0722B`, with uint8 RGB scaled to [0,1]. GLCM uses 16 levels, one-pixel distance, and four offsets; LBP uses 3×3 valid neighborhoods; gradients use a fully masked interior. No automatic correction for exposure, white balance, image scale or noise is applied.
+
+Once the manifest, grouping, labels, mask quality, checkpoint history, sample adequacy and a frozen protocol are independently reviewed:
+
+```powershell
+py -m src.evaluation.bc_texture_experiment --manifest path/to/reviewed_fish.csv --config configs/bc_texture_experiment.json --output path/to/new_texture_validation
+```
+
+The fixed procedure fits training-only standardization and logistic models, scores the same retained validation fish with all texture descriptors, each group removed, and a fixed color baseline, and compares aligned Model 2 predictions on the same covered subset. Class metrics and lighting strata go to `report.md` and `experiment.json`; `false_predictions.csv` provides source-image/mask paths for manual review. Standardized coefficients describe model usage, not causal importance; correlated descriptors make individual coefficients unstable. `--evaluate-test` adds the final test only after protocol freeze; an external process must prevent repeated inspection. All metadata and independence assertions require human verification. This script is separate from live inference and changes no grading thresholds.
+
+Existing handcrafted QA covers uniform surfaces, tiny masks and background exclusion; additional synthetic checks examine dimming, resizing and merged/touching-mask ambiguity. Synthetic checks do not validate camera noise or biological signal. A bad mask can include background, touching fish, glare or crop edges; even an `APPROVED` text field does not authenticate a review. Quantization and one-pixel operators are sensitive to image scale, blur, lighting, white balance, JPEG artifacts and noise. An irregular edge is **not** proof of a crack, tear or belly hole. The legacy `src/training/feature_dataset.py` may discover numeric columns across all splits, so this scaffold uses a fixed allowlist instead of automatic feature discovery.

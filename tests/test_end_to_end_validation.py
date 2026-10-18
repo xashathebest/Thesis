@@ -12,6 +12,26 @@ from src.evaluation.validation_study import create_validation_session_manifest
 
 
 class EndToEndValidationTests(unittest.TestCase):
+    def test_missing_class_a_blocks_four_grade_claim_and_is_marked_simulated(self) -> None:
+        report = evaluate_end_to_end_manifest({"metadata": {"data_kind": "SIMULATED"}, "fish_records": [
+            {"fish_id": "s1", "true_grade": "Class B", "final_grade": "Rejected", "lighting": "dim", "latency_ms": 25},
+            {"fish_id": "s2", "true_grade": "Class C", "final_grade": "Ungraded", "lighting": "dim", "latency_ms": 35},
+            {"fish_id": "s3", "true_grade": "Rejected", "final_grade": "Rejected", "partial_visibility": "yes"},
+        ]})
+        extended = report["extended_fish_metrics"]
+        self.assertEqual(extended["status"], "SIMULATED")
+        self.assertIn("Class A", extended["missing_true_grades"])
+        self.assertFalse(extended["four_grade_performance_claim_allowed"])
+        self.assertIsNone(extended["macro_f1_including_ungraded"])
+        self.assertEqual(extended["false_rejected"], {"count": 1, "non_rejected_truth_count": 2, "rate": 0.5})
+        self.assertEqual(extended["latency_ms"]["median"], 30)
+        self.assertEqual(report["fish_level_by_recorded_subgroup"]["lighting"]["dim"]["total_ground_truth_fish"], 2)
+
+    def test_empty_data_are_not_measured(self) -> None:
+        result = evaluate_end_to_end_manifest({})["extended_fish_metrics"]
+        self.assertEqual(result["status"], "NOT_RUN")
+        self.assertFalse(result["four_grade_performance_claim_allowed"])
+
     def test_counting_metrics_use_explicit_ground_truth_only(self) -> None:
         report = evaluate_counting_records(
             [

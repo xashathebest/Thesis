@@ -1,0 +1,7 @@
+item,status,reason
+independent_fish_level_study,BLOCKED,No verified independent expert-labeled fish manifest or locked session was supplied.
+model1_detection_and_counting,NOT_RUN,No independent counting/detection truth was supplied.
+E0_end_to_end_grading,NOT_RUN,No independent fish-level test was run.
+E1_E2_fusion_comparison,BLOCKED,No validated same-fish feature artifact and holdout set were supplied.
+E3_E4_structural_fusion,BLOCKED,Expert structural criteria and validated evidence are unavailable.
+real_camera_latency,NOT_RUN,No locked real-camera latency study was supplied.

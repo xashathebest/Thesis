@@ -1,0 +1,11 @@
+{
+  "seed": 42,
+  "minimum_mask_pixels": 500,
+  "features": [
+    "mean_value", "median_value", "mean_saturation", "median_saturation",
+    "mean_lab_l", "median_lab_l", "std_lab_l", "mean_lab_a", "mean_lab_b",
+    "lab_b_p90", "specular_ratio_proxy", "largest_highlight_ratio_proxy",
+    "yellow_ratio_proxy", "brown_ratio_proxy", "dark_patch_ratio_proxy",
+    "discoloration_coverage_proxy"
+  ]
+}

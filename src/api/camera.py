@@ -1050,8 +1050,29 @@ class CameraInspectionService:
                         )
                         self._record_quality_observation(detection, result, bounds, crop.shape, fresh, frame=frame, crop=crop)
                 elif self.quality_model.model is not None and isinstance(self.quality_model, YoloQualityModel) and self.quality_inference_mode == "full_frame":
-                    parents = [ParentAnchor(int(item.track_id), item.bbox, item.confidence) for item in eligible]
-                    full_frame_results = self.quality_model.predict_full_frame(frame, parents, frame_id=self._frame_index)
+                    # Ownership must consider every visible fish, even if it
+                    # is finalized, not scheduled, or temporarily untracked.
+                    # Untracked parents get frame-local IDs and are never graded.
+                    tracked_ids = {int(item.track_id) for item in detections if item.track_id is not None}
+                    parents = []
+                    seen_ids: set[int] = set()
+                    transient_id = -1
+                    for item in detections:
+                        if item.track_id is None:
+                            while transient_id in tracked_ids:
+                                transient_id -= 1
+                            parent_id = transient_id
+                            transient_id -= 1
+                        else:
+                            parent_id = int(item.track_id)
+                            if parent_id in seen_ids:
+                                continue
+                        seen_ids.add(parent_id)
+                        parents.append(ParentAnchor(parent_id, item.bbox, item.confidence))
+                    full_frame_results = self.quality_model.predict_full_frame(
+                        frame, parents, frame_id=self._frame_index,
+                        grade_track_ids={int(item.track_id) for item in eligible},
+                    )
                     self._runtime_metrics.record_call("model2")
                     self._runtime_metrics.record_latency("model2_inference", self.quality_model.last_inference_seconds)
                     self._runtime_metrics.record_latency("association", self.quality_model.last_association_seconds)

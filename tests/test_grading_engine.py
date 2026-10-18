@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from io import BytesIO, StringIO
 import unittest
 
@@ -136,6 +137,111 @@ class GradingEngineTests(unittest.TestCase):
         self.assertEqual(body_color["status"], "measured")
         self.assertEqual(body_color["grade_adjustment"], 0.0)
         self.assertEqual(verdict.adjustments, ())
+
+    def test_supporting_measurements_are_optional_traceable_and_do_not_change_grades(self) -> None:
+        evidence = [part("Body", "Class A", .9), part("Head", "Class A", .9)]
+        enabled = self.engine(image_diagnostics_enabled=True)
+        disabled = self.engine(image_diagnostics_enabled=False)
+        for frame_id in (10, 11):
+            on = enabled.evaluate(1, crop(), evidence, stabilize=True, frame_id=frame_id)
+            off = disabled.evaluate(1, crop(), evidence, stabilize=True, frame_id=frame_id)
+        self.assertEqual(on.final_grade, off.final_grade)
+        self.assertEqual(on.weighted_scores, off.weighted_scores)
+        self.assertEqual(on.reason_codes, off.reason_codes)
+        payload = on.to_dict()["supporting_image_measurements"]
+        self.assertEqual(payload["fish_id"], 1)
+        self.assertFalse(payload["used_for_final_grade"])
+        self.assertEqual([item["frame_id"] for item in payload["regions"]["Body"]["frame_rois"]], [10, 11])
+        self.assertIn("no segmentation mask", payload["regions"]["Body"]["measurement_source"])
+        self.assertEqual(payload["texture"]["missing_value_reason"], "no_validated_fish_mask_in_runtime")
+        self.assertEqual(off.supporting_image_measurements["regions"]["Body"]["missing_value_reason"], "diagnostics_disabled")
+        json.dumps(payload, allow_nan=False)
+        other = enabled.evaluate(2, np.full((40, 64, 3), 255, dtype=np.uint8), evidence, stabilize=False, frame_id="other")
+        other_payload = other.supporting_image_measurements
+        self.assertEqual(other_payload["fish_id"], 2)
+        self.assertEqual(other_payload["regions"]["Body"]["frame_rois"][0]["frame_id"], "other")
+        self.assertNotEqual(payload["regions"]["Body"]["values"]["mean_value"], other_payload["regions"]["Body"]["values"]["mean_value"])
+        row = inspection_row({"track_id": 1, "quality": on.final_grade, "analysis": on.to_dict()})
+        self.assertEqual(json.loads(row["supporting_image_measurements"])["fish_id"], 1)
+
+    def test_invalid_diagnostic_crop_is_unavailable_without_inventing_pixels(self) -> None:
+        result = self.engine().evaluate(3, np.empty((0, 0, 3), dtype=np.uint8), [part("Body", "Class A", .9)], stabilize=False, frame_id="invalid")
+        whole = result.supporting_image_measurements["regions"]["Whole Fish"]
+        self.assertEqual(whole["status"], "unavailable")
+        self.assertIn("Invalid", whole["missing_value_reason"])
+        self.assertEqual(whole["frame_rois"], [])
+
+    def test_temporal_gate_requires_two_distinct_evidence_bearing_frames(self) -> None:
+        cases = (
+            ("body", [part("Body", "Class A", .9)]),
+            ("body_head", [part("Body", "Class A", .9), part("Head", "Class A", .9)]),
+            ("body_tail", [part("Body", "Class A", .9), part("Tail", "Class A", .9)]),
+        )
+        for name, evidence in cases:
+            with self.subTest(case=name):
+                live = self.engine(minimum_track_observations=2, final_verdict_threshold=.25)
+                live.evaluate(1, crop(), evidence, stabilize=True, frame_id=1)
+                empty = live.evaluate(1, crop(), [], stabilize=True, frame_id=2)
+                self.assertIsNone(empty.final_grade)
+                self.assertIn("UG_TEMPORAL_EVIDENCE", empty.reason_codes)
+                self.assertEqual(empty.temporal_stability["evidence_bearing_frame_count"], 1)
+                repeated = live.evaluate(1, crop(), evidence, stabilize=True, frame_id=1)
+                self.assertIsNone(repeated.final_grade)
+                recovered = live.evaluate(1, crop(), evidence, stabilize=True, frame_id=3)
+                self.assertEqual(recovered.final_grade, "Class A")
+        live = self.engine(minimum_track_observations=2, final_verdict_threshold=.25)
+        for frame_id in (1, 2):
+            no_body = live.evaluate(2, crop(), [part("Head", "Class A", .99), part("Tail", "Class A", .99)], stabilize=True, frame_id=frame_id)
+        self.assertIsNone(no_body.final_grade)
+        self.assertIn("UG_TEMPORAL_EVIDENCE", no_body.reason_codes)
+        self.assertEqual(no_body.temporal_stability["evidence_bearing_frame_count"], 0)
+
+    def test_transient_uncertainty_recovers_only_after_new_clear_evidence(self) -> None:
+        evidence = [part("Body", "Class A", .9), part("Head", "Class A", .9)]
+        for flag in ("association_ambiguous", "parent_uncertain"):
+            with self.subTest(flag=flag):
+                live = self.engine(minimum_track_observations=2)
+                live.evaluate(7, crop(), evidence, stabilize=True, frame_id=1)
+                uncertain = live.evaluate(7, crop(), evidence, stabilize=True, frame_id=2, frame_quality={flag: True})
+                self.assertIsNone(uncertain.final_grade)
+                self.assertIsNone(live.evaluate(7, crop(), evidence, stabilize=True, frame_id=3).final_grade)
+                recovered = live.evaluate(7, crop(), evidence, stabilize=True, frame_id=4)
+                self.assertEqual(recovered.final_grade, "Class A")
+                self.assertGreaterEqual(recovered.temporal_stability["historical_uncertainty_counts"][flag], 1)
+                live.discard_except(set())
+                self.assertIsNone(live.evaluate(7, crop(), evidence, stabilize=True, frame_id=5).final_grade)
+
+    def test_low_confidence_and_strict_partial_frames_do_not_supply_temporal_evidence(self) -> None:
+        live = self.engine(minimum_track_observations=2, final_verdict_threshold=.25)
+        weak = [part("Body", "Class A", .20), part("Head", "Class A", .95)]
+        for frame_id in (1, 2):
+            result = live.evaluate(9, crop(), weak, stabilize=True, frame_id=frame_id)
+        self.assertEqual(result.temporal_stability["evidence_bearing_frame_count"], 0)
+        self.assertIsNone(result.final_grade)
+        strict = self.engine(grading_mode="strict", minimum_track_observations=2)
+        for frame_id in (1, 2):
+            result = strict.evaluate(9, crop(), [part("Body", "Class A", .9), part("Head", "Class A", .9)], stabilize=True, frame_id=frame_id)
+        self.assertEqual(result.temporal_stability["evidence_bearing_frame_count"], 0)
+        self.assertIsNone(result.final_grade)
+
+    def test_old_evidence_expires_during_occlusion_and_duplicate_cannot_refresh_it(self) -> None:
+        live = self.engine(minimum_track_observations=2, temporal_evidence_limit=3, final_verdict_threshold=.25)
+        evidence = [part("Body", "Class A", .9)]
+        live.evaluate(4, crop(), evidence, stabilize=True, frame_id=1)
+        live.evaluate(4, crop(), [], stabilize=True, frame_id=2)
+        live.evaluate(4, crop(), evidence, stabilize=True, frame_id=1)
+        result = live.evaluate(4, crop(), [], stabilize=True, frame_id=3)
+        self.assertEqual(result.temporal_stability["evidence_bearing_frame_count"], 1)
+        self.assertEqual(result.temporal_stability["duplicate_frame_count"], 1)
+        result = live.evaluate(4, crop(), [], stabilize=True, frame_id=4)
+        self.assertEqual(result.temporal_stability["evidence_bearing_frame_count"], 0)
+        self.assertIsNone(result.final_grade)
+        result = live.evaluate(4, crop(), evidence, stabilize=True, frame_id=5)
+        self.assertIsNone(result.final_grade)
+
+    def test_temporal_window_must_allow_required_evidence(self) -> None:
+        with self.assertRaises(ValueError):
+            GradingConfig(minimum_track_observations=3, temporal_evidence_limit=2)
 
 
 class ExplainableExportTests(unittest.TestCase):
